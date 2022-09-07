@@ -93,13 +93,13 @@ def triton_ssm(sequence, A, B, C, N_HEADS, STATE_SIZE):
     triton.testing.Benchmark(
         x_names=['size'],  # argument names to use as an x-axis for the plot
         x_vals=[
-            2, 4, 6, 8
+            2**i for i in range(12)
         ],  # different possible values for `x_name`
         x_log=True,  # x axis is logarithmic
         line_arg='provider',  # argument name whose value corresponds to a different line in the plot
-        line_vals=['triton', 'torch', 'torch_script', 'no_diag', 'no_diag_script'],  # possible values for `line_arg`
-        line_names=['Triton', 'Torch diag', 'TorchScript diag' 'Torch', 'TorchScript'],  # label name for the lines
-        styles=[('red', '-'), ('green', '+'), ("green", "-"), ("blue", "+"), ("blue", "-")],  # line styles
+        line_vals=['triton', 'torch_script', 'no_diag_script'],  # possible values for `line_arg`
+        line_names=['Triton', 'TorchScriptdiag', 'TorchScript'],  # label name for the lines
+        styles=[('red', 'solid'), ("green", "-"), ("blue", "-")],  # line styles
         ylabel='elem/s',  # label name for the y-axis
         plot_name='ssm-performance',  # name for the plot. Used also as a file name for saving the plot.
         args={},  # values for function arguments not in `x_names` and `y_name`
