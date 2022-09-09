@@ -22,7 +22,7 @@ import triton.language as tl
 @triton.jit
 def ssm_kernel_mimo(u_ptr, a_ptr, b_ptr, c_ptr, d_ptr, output_ptr, BATCH_SIZE:tl.constexpr, L: tl.constexpr, U_LENGTH: tl.constexpr, N: tl.constexpr, N_HEADS: tl.constexpr):
     i = tl.program_id(axis=0) # which head we're on
-    A = tl.reshape(tl.load(a_ptr + i * N + tl.arange(0, N)), (128, 1)) # A ** L
+    A = tl.reshape(tl.load(a_ptr + i * N + tl.arange(0, N)), (N, 1)) # A ** L
     B_hat = tl.reshape(tl.load(b_ptr + i * N + tl.arange(0, N*L)), (N, L)) # [STATE_SIZE, L]
     C_hat = tl.reshape(tl.load(c_ptr + i * N + tl.arange(0, N*L)), (N, L)) # [STATE_SIZE, L]
     D_hat = tl.reshape(tl.load(d_ptr + tl.arange(0, L*L)), (L, L)) # [L, L]
@@ -68,6 +68,14 @@ def triton_mimo_batched(sequence, A, B, C, D, L, BATCH_SIZE, N_HEADS, STATE_SIZE
 
 from scipy.linalg import toeplitz
 import numpy as np
+
+'''
+STATE_SIZE = 16
+SEQUENCE_LENGTH = 32
+N_HEADS = 1
+BATCH_SIZE= 16
+L = 16
+'''
 
 STATE_SIZE = 128
 SEQUENCE_LENGTH = 64

@@ -1,6 +1,6 @@
 import resource
 print("stack before", resource.getrlimit(resource.RLIMIT_STACK))
-resource.setrlimit(resource.RLIMIT_STACK, (512*1024*1024, -1))
+# resource.setrlimit(resource.RLIMIT_STACK, (512*1024*1024, -1))
 print("stack after", resource.getrlimit(resource.RLIMIT_STACK))
 
 import torch
