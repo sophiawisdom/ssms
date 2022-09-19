@@ -37,41 +37,39 @@ static void initialize_cuda() {
     }
 }
 
-template <typename scalar_t>
-__global__ void mimo_cuda_forward_kernel(
-    scalar_t * __restrict__ u,
-    scalar_t * __restrict__ a,
-    scalar_t * __restrict__ b,
-    scalar_t * __restrict__ c,
-    scalar_t * __restrict__ d,
-    scalar_t * __restrict__ out
-) {
-    out[threadIdx.x + blockIdx.x * blockDim.x] = 6;
-}
+unsigned int old_sequence_length = 0;
 
 torch::Tensor mimo_cuda_forward(
     torch::Tensor u,
     torch::Tensor a,
     torch::Tensor b,
     torch::Tensor c,
-    torch::Tensor d
+    torch::Tensor d,
+    unsigned int sequence_length
 ) {
 
   const auto num_heads = a.size(0); // {N_HEADS, STATE_SIZE}
   const auto batch_size = u.size(1);
 
-  auto output = torch::zeros_like(u);
+  auto output = torch::empty_like(u);
 
   void * argBuffer[6];
-  int argBufferSize = 6*8; // 6 pointers
+  int argBufferSize = 7*8; // 6 pointers
   argBuffer[0] = u.data_ptr();
   argBuffer[1] = a.data_ptr();
   argBuffer[2] = b.data_ptr();
   argBuffer[3] = c.data_ptr();
   argBuffer[4] = d.data_ptr();
   argBuffer[5] = output.data_ptr();
-  for (int i = 0; i < 6; i++) {
-    printf("argBuffer for #%d is %p\n", i, argBuffer[i]);
+  argBuffer[6] = (void *)sequence_length;
+
+  if (old_sequence_length != sequence_length) {
+    printf("sequence_length %u\n", sequence_length);
+    old_sequence_length = sequence_length;
+  }
+
+  for (int i = 0; i < sizeof(argBuffer)/sizeof(void *) + 1; i++) {
+    // printf("argBuffer for #%d is %p\n", i, argBuffer[i]);
   }
 
   void *config[] = {
@@ -79,7 +77,7 @@ torch::Tensor mimo_cuda_forward(
     CU_LAUNCH_PARAM_BUFFER_SIZE,    &argBufferSize,
     CU_LAUNCH_PARAM_END,
   };
-  printf("about to cuLaunchKernel\n");
+  // printf("about to cuLaunchKernel, sequence_length is %d %p\n", sequence_length, (void *)sequence_length);
   int error = cuLaunchKernel(kernel_function,
   1, 1, 1, // grid x, y, z
   32, 1, 1, // block x, y, z
@@ -90,8 +88,7 @@ torch::Tensor mimo_cuda_forward(
     const char *string = cudaGetErrorString(lastErr);
     fprintf(stderr, "* Error with cuLaunchKernel. Error name \"%s\" string \"%s\" err is %d\n", name, string, error);
   }
-  printf("cuLaunchKernel result is %d\n", error);
-  // mimo_cuda_forward_kernel<<<num_heads, 32>>>(u.data<float>(), a.data<float>(), b.data<float>(), c.data<float>(), d.data<float>(), output.data<float>());
+  // printf("cuLaunchKernel result is %d\n", error);
 
   return output;
 }

@@ -12,7 +12,8 @@
         .param .u64 b_ptr_param,
         .param .u64 c_ptr_param,
         .param .u64 d_ptr_param,
-        .param .u64 output_ptr_param
+        .param .u64 output_ptr_param,
+        .param .u64 sequence_length_param
 )
 
 .maxntid 256, 1, 1
@@ -23,6 +24,7 @@
     .reg .b64 c_ptr;
     .reg .b64 d_ptr;
     .reg .b64 output_ptr;
+    .reg .u64 sequence_length;
 
     .reg .pred should_we_loop;
 
@@ -31,7 +33,12 @@
     ld.param.u64 b_ptr, [b_ptr_param]; // B is of shape {N_HEADS, N,L}
     ld.param.u64 c_ptr, [c_ptr_param]; // C is of shape {N_HEADS, L,N}
     ld.param.u64 d_ptr, [d_ptr_param]; // D is of shape {N_HEADS, L,L}
+    ld.param.u64 d_ptr, [d_ptr_param]; // D is of shape {N_HEADS, L,L}
     ld.param.u64 output_ptr, [output_ptr_param];
+    ld.param.u64 sequence_length, [sequence_length_param];
+
+    .reg .u16 sequence_length_small;
+    cvt.u16.u64 sequence_length_small, sequence_length;
 
     .reg .u64 thread_id_big;
     cvt.u64.u32 thread_id_big, %tid.x;
@@ -50,6 +57,12 @@
     // N=64 L=8, so multiply our block_id (which is our head) by N and L.
     mul.wide.u32 head_abc_offset, block_id, 512;
 
+    .reg .u64 thread_id_times_2;
+    mul.wide.u32 thread_id_times_2, thread_id, 2;
+    .reg .f32 thread_id_times_2_float;
+    cvt.rz.f32.u64 thread_id_times_2_float, thread_id_times_2;
+    .reg .f32 thread_id_times_2_plus_1_float;
+    add.f32 thread_id_times_2_plus_1_float, thread_id_times_2_float, 1.0;
     .reg .u64 thread_id_times_4;
     mul.wide.u32 thread_id_times_4, thread_id, 4;
     .reg .u64 thread_id_times_8;
@@ -71,14 +84,14 @@
     add.u64 c_ptr_for_thread, c_ptr_for_thread, thread_id_times_4;
     .reg .b32 c_<8>;
     // We need to load C in column-major (N, L) format, which is equivalent to row-major (L, N) format.
-    ld.global.L1::no_allocate.b32 {c_0}, [c_ptr_for_thread]; // &B[0][0-1] + threadId*2
-    ld.global.L1::no_allocate.b32 {c_1}, [c_ptr_for_thread+128]; // &B[8][0-1] + threadId*2
-    ld.global.L1::no_allocate.b32 {c_2}, [c_ptr_for_thread+256]; // &B[16][0-1] + threadId*2
-    ld.global.L1::no_allocate.b32 {c_3}, [c_ptr_for_thread+384]; // &B[24][0-1] + threadId*2
-    ld.global.L1::no_allocate.b32 {c_4}, [c_ptr_for_thread+512]; // &B[32][0-1] + threadId*2
-    ld.global.L1::no_allocate.b32 {c_5}, [c_ptr_for_thread+640]; // &B[40][0-1] + threadId*2
-    ld.global.L1::no_allocate.b32 {c_6}, [c_ptr_for_thread+768]; // &B[48][0-1] + threadId*2
-    ld.global.L1::no_allocate.b32 {c_7}, [c_ptr_for_thread+896]; // &B[56][0-1] + threadId*2
+    ld.global.L1::no_allocate.b32 {c_0}, [c_ptr_for_thread]; // &C[0][0-1] + threadId*2
+    ld.global.L1::no_allocate.b32 {c_1}, [c_ptr_for_thread+128]; // &C[8][0-1] + threadId*2
+    ld.global.L1::no_allocate.b32 {c_2}, [c_ptr_for_thread+256]; // &C[16][0-1] + threadId*2
+    ld.global.L1::no_allocate.b32 {c_3}, [c_ptr_for_thread+384]; // &C[24][0-1] + threadId*2
+    ld.global.L1::no_allocate.b32 {c_4}, [c_ptr_for_thread+512]; // &C[32][0-1] + threadId*2
+    ld.global.L1::no_allocate.b32 {c_5}, [c_ptr_for_thread+640]; // &C[40][0-1] + threadId*2
+    ld.global.L1::no_allocate.b32 {c_6}, [c_ptr_for_thread+768]; // &C[48][0-1] + threadId*2
+    ld.global.L1::no_allocate.b32 {c_7}, [c_ptr_for_thread+896]; // &C[56][0-1] + threadId*2
 
     .reg .u64 b_ptr_for_thread;
     add.u64 b_ptr_for_thread, b_ptr, head_abc_offset; // calculate b_ptr[head]
@@ -94,30 +107,31 @@
     ld.global.L1::no_allocate.b32 {b_6}, [b_ptr_for_thread+768]; // &B[48][0-1] + threadId*2
     ld.global.L1::no_allocate.b32 {b_7}, [b_ptr_for_thread+896]; // &B[56][0-1] + threadId*2
 
+    .reg .u64 thread_id_sdf;
+    cvt.u64.u32 thread_id_sdf, thread_id;
+    and.b64 thread_id_sdf, thread_id_sdf, 3;
+    shl.b64 thread_id_sdf, thread_id_sdf, 3;
+
     // We load more a's than we would ideally like because of the way the matrix fragmentation works
-    .reg .u64 thread_id_divided_by_two;
-    cvt.u64.u32 thread_id_divided_by_two, thread_id;
-    shr.u64 thread_id_divided_by_two, thread_id_divided_by_two, 3;
-    shl.b64 thread_id_divided_by_two, thread_id_divided_by_two, 2;
     .reg .u64 a_ptr_for_thread;
-    add.u64 a_ptr_for_thread, a_ptr, thread_id_divided_by_two;
+    add.u64 a_ptr_for_thread, a_ptr, thread_id_sdf;
     .reg .f32 a_<16>;
     ld.global.f32 a_0, [a_ptr_for_thread];
-    ld.global.f32 a_1, [a_ptr_for_thread + 16];
+    ld.global.f32 a_1, [a_ptr_for_thread + 4];
     ld.global.f32 a_2, [a_ptr_for_thread + 32];
-    ld.global.f32 a_3, [a_ptr_for_thread + 48];
+    ld.global.f32 a_3, [a_ptr_for_thread + 36];
     ld.global.f32 a_4, [a_ptr_for_thread + 64];
-    ld.global.f32 a_5, [a_ptr_for_thread + 80];
+    ld.global.f32 a_5, [a_ptr_for_thread + 68];
     ld.global.f32 a_6, [a_ptr_for_thread + 96];
-    ld.global.f32 a_7, [a_ptr_for_thread + 112];
+    ld.global.f32 a_7, [a_ptr_for_thread + 100];
     ld.global.f32 a_8, [a_ptr_for_thread + 128];
-    ld.global.f32 a_9, [a_ptr_for_thread + 144];
+    ld.global.f32 a_9, [a_ptr_for_thread + 132];
     ld.global.f32 a_10, [a_ptr_for_thread + 160];
-    ld.global.f32 a_11, [a_ptr_for_thread + 176];
+    ld.global.f32 a_11, [a_ptr_for_thread + 164];
     ld.global.f32 a_12, [a_ptr_for_thread + 192];
-    ld.global.f32 a_13, [a_ptr_for_thread + 208];
+    ld.global.f32 a_13, [a_ptr_for_thread + 196];
     ld.global.f32 a_14, [a_ptr_for_thread + 224];
-    ld.global.f32 a_15, [a_ptr_for_thread + 240];
+    ld.global.f32 a_15, [a_ptr_for_thread + 228];
 
     .reg .u64 input_offset;
     mul.wide.u32 input_offset, thread_id, 32;
@@ -194,40 +208,45 @@ SEQUENCE_MULS:
     // ld.global.b32 u_1, [u_ptr];
 
     // Calculate A*X. A is (N=64,) and X is (B=16, N=64). We want to multiply each value in X by its matching A.
-    /*
     mul.f32 x_0, x_0, a_0;
-    mul.f32 x_1, x_1, a_0;
-    mul.f32 x_2, x_2, a_1;
+    mul.f32 x_1, x_1, a_1;
+    mul.f32 x_2, x_2, a_0;
     mul.f32 x_3, x_3, a_1;
+
     mul.f32 x_4, x_4, a_2;
-    mul.f32 x_5, x_5, a_2;
-    mul.f32 x_6, x_6, a_3;
+    mul.f32 x_5, x_5, a_3;
+    mul.f32 x_6, x_6, a_2;
     mul.f32 x_7, x_7, a_3;
+
     mul.f32 x_8, x_8, a_4;
-    mul.f32 x_9, x_9, a_4;
-    mul.f32 x_10, x_10, a_5;
+    mul.f32 x_9, x_9, a_5;
+    mul.f32 x_10, x_10, a_4;
     mul.f32 x_11, x_11, a_5;
+    
     mul.f32 x_12, x_12, a_6;
-    mul.f32 x_13, x_13, a_6;
-    mul.f32 x_14, x_14, a_7;
+    mul.f32 x_13, x_13, a_7;
+    mul.f32 x_14, x_14, a_6;
     mul.f32 x_15, x_15, a_7;
+
     mul.f32 x_16, x_16, a_8;
-    mul.f32 x_17, x_17, a_8;
-    mul.f32 x_18, x_18, a_9;
+    mul.f32 x_17, x_17, a_9;
+    mul.f32 x_18, x_18, a_8;
     mul.f32 x_19, x_19, a_9;
+    
     mul.f32 x_20, x_20, a_10;
-    mul.f32 x_21, x_21, a_10;
-    mul.f32 x_22, x_22, a_11;
+    mul.f32 x_21, x_21, a_11;
+    mul.f32 x_22, x_22, a_10;
     mul.f32 x_23, x_23, a_11;
+    
     mul.f32 x_24, x_24, a_12;
-    mul.f32 x_25, x_25, a_12;
-    mul.f32 x_26, x_26, a_13;
+    mul.f32 x_25, x_25, a_13;
+    mul.f32 x_26, x_26, a_12;
     mul.f32 x_27, x_27, a_13;
+    
     mul.f32 x_28, x_28, a_14;
-    mul.f32 x_29, x_29, a_14;
-    mul.f32 x_30, x_30, a_15;
+    mul.f32 x_29, x_29, a_15;
+    mul.f32 x_30, x_30, a_14;
     mul.f32 x_31, x_31, a_15;
-    */
 
     /*
     cvt.rz.bf16x2.f32 b_0, 1.0, 1.0;
@@ -250,22 +269,22 @@ SEQUENCE_MULS:
     mma.sync.aligned.m16n8k8.row.col.f32.bf16.bf16.f32 {x_24, x_25, x_26, x_27}, {u_0, u_1}, {b_6}, {x_24, x_25, x_26, x_27}; // (u @ B[:,48:56]) -> X[:,48:56]
     mma.sync.aligned.m16n8k8.row.col.f32.bf16.bf16.f32 {x_28, x_29, x_30, x_31}, {u_0, u_1}, {b_7}, {x_28, x_29, x_30, x_31}; // (u @ B[:,56:64]) -> X[:,56:64]
 
-    cvt.rz.bf16x2.f32 x_combined_0, x_0, x_1;
-    cvt.rz.bf16x2.f32 x_combined_1, x_2, x_3;
-    cvt.rz.bf16x2.f32 x_combined_2, x_4, x_5;
-    cvt.rz.bf16x2.f32 x_combined_3, x_6, x_7;
-    cvt.rz.bf16x2.f32 x_combined_4, x_8, x_9;
-    cvt.rz.bf16x2.f32 x_combined_5, x_10, x_11;
-    cvt.rz.bf16x2.f32 x_combined_6, x_12, x_13;
-    cvt.rz.bf16x2.f32 x_combined_7, x_14, x_15;
-    cvt.rz.bf16x2.f32 x_combined_8, x_16, x_17;
-    cvt.rz.bf16x2.f32 x_combined_9, x_18, x_19;
-    cvt.rz.bf16x2.f32 x_combined_10, x_20, x_21;
-    cvt.rz.bf16x2.f32 x_combined_11, x_22, x_23;
-    cvt.rz.bf16x2.f32 x_combined_12, x_24, x_25;
-    cvt.rz.bf16x2.f32 x_combined_13, x_26, x_27;
-    cvt.rz.bf16x2.f32 x_combined_14, x_28, x_29;
-    cvt.rz.bf16x2.f32 x_combined_15, x_30, x_31;
+    cvt.rz.bf16x2.f32 x_combined_0, x_1, x_0;
+    cvt.rz.bf16x2.f32 x_combined_1, x_3, x_2;
+    cvt.rz.bf16x2.f32 x_combined_2, x_5, x_4;
+    cvt.rz.bf16x2.f32 x_combined_3, x_7, x_6;
+    cvt.rz.bf16x2.f32 x_combined_4, x_9, x_8;
+    cvt.rz.bf16x2.f32 x_combined_5, x_11, x_10;
+    cvt.rz.bf16x2.f32 x_combined_6, x_13, x_12;
+    cvt.rz.bf16x2.f32 x_combined_7, x_15, x_14;
+    cvt.rz.bf16x2.f32 x_combined_8, x_17, x_16;
+    cvt.rz.bf16x2.f32 x_combined_9, x_19, x_18;
+    cvt.rz.bf16x2.f32 x_combined_10, x_21, x_20;
+    cvt.rz.bf16x2.f32 x_combined_11, x_23, x_22;
+    cvt.rz.bf16x2.f32 x_combined_12, x_25, x_24;
+    cvt.rz.bf16x2.f32 x_combined_13, x_27, x_26;
+    cvt.rz.bf16x2.f32 x_combined_14, x_29, x_28;
+    cvt.rz.bf16x2.f32 x_combined_15, x_31, x_30;
     // prmt.b32 x_combined_1, x_2, x_3, 12918; is equivalent
 
     mov.f32 out_0, 0.0;
@@ -279,18 +298,11 @@ SEQUENCE_MULS:
     // Then X[,8:16] @ C[8:16] -> (16, 8)
     // Then X[,16:24] @ C[16:24] -> (16, 8)
 
-    /*
-    cvt.rz.bf16x2.f32 c_0, 1.0, 1.0;
-    cvt.rz.bf16x2.f32 c_1, 1.0, 1.0;
-    cvt.rz.bf16x2.f32 c_2, 1.0, 1.0;
-    cvt.rz.bf16x2.f32 c_3, 1.0, 1.0;
-    cvt.rz.bf16x2.f32 c_4, 1.0, 1.0;
-    cvt.rz.bf16x2.f32 c_5, 1.0, 1.0;
-    cvt.rz.bf16x2.f32 c_6, 1.0, 1.0;
-    cvt.rz.bf16x2.f32 c_7, 1.0, 1.0;
-    */
-
     // X[:,0:16] @ C[0:16] -> Out (B=16, L=8)
+
+    // X[:,:8] @ C[:8] -> 
+    // mma.sync.aligned.m16n8k8.row.col.f32.bf16.bf16.f32 {out_0, out_1, out_2, out_3}, {x_combined_0, x_combined_1}, {c_0}, {out_0, out_1, out_2, out_3};
+    // mma.sync.aligned.m16n8k8.row.col.f32.bf16.bf16.f32 {out_0, out_1, out_2, out_3}, {x_combined_2, x_combined_3}, {c_1}, {out_0, out_1, out_2, out_3};
     mma.sync.aligned.m16n8k16.row.col.f32.bf16.bf16.f32 {out_0, out_1, out_2, out_3}, {x_combined_0, x_combined_1, x_combined_2, x_combined_3}, {c_0, c_1}, {out_0, out_1, out_2, out_3};
     // X[:,16:32] @ C[16:32]
     mma.sync.aligned.m16n8k16.row.col.f32.bf16.bf16.f32 {out_0, out_1, out_2, out_3}, {x_combined_4, x_combined_5, x_combined_6, x_combined_7}, {c_2, c_3}, {out_0, out_1, out_2, out_3};
@@ -302,17 +314,17 @@ SEQUENCE_MULS:
     // + row u (B=16, L=8) @ D (L=8, L=8) -> (B=16, L=8)
     mma.sync.aligned.m16n8k8.row.col.f32.bf16.bf16.f32 {out_0, out_1, out_2, out_3}, {u_0, u_1}, {d_fragment}, {out_0, out_1, out_2, out_3};
 
-    cvt.rz.bf16x2.f32 out_combined_0, out_0, out_1;
-    cvt.rz.bf16x2.f32 out_combined_1, out_2, out_3;
+    cvt.rz.bf16x2.f32 out_combined_0, out_1, out_0;
+    cvt.rz.bf16x2.f32 out_combined_1, out_3, out_2;
 
     st.global.b32 [output_ptr_for_thread], out_combined_0;
     st.global.b32 [output_ptr_for_thread+128], out_combined_1;
 
-    add.u32 sequence_index, sequence_index, 1;
+    sub.u16 sequence_length_small, sequence_length_small, 1;
     add.u64 u_ptr_for_thread, u_ptr_for_thread, 256; // L=8 BATCH_SIZE=16
     add.u64 output_ptr_for_thread, output_ptr_for_thread, 256; // L=8 BATCH_SIZE=16
 
-    setp.lt.u32     should_we_exit_sequence, sequence_index, 8;
+    setp.gt.u16 should_we_exit_sequence, sequence_length_small, 0;
     @should_we_exit_sequence bra SEQUENCE_MULS;
 
     ret;
