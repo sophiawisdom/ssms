@@ -13,7 +13,6 @@ CUdevice   device;
 CUcontext  context;
 int major = 0, minor = 0;
 
-
 __attribute__((constructor))
 static void initialize_cuda() {
     CUresult err = cuInit(0);
@@ -51,7 +50,10 @@ torch::Tensor mimo_cuda_forward(
   const auto num_heads = a.size(0); // {N_HEADS, STATE_SIZE}
   const auto batch_size = u.size(1);
 
-  auto output = torch::empty_like(u);
+  auto output = torch::zeros_like(u);
+
+  printf("a sizes 0 is %d\n", a.sizes()[0]);
+  unsigned int n_heads = a.sizes()[0];
 
   void * argBuffer[6];
   int argBufferSize = 7*8; // 6 pointers
@@ -79,7 +81,7 @@ torch::Tensor mimo_cuda_forward(
   };
   // printf("about to cuLaunchKernel, sequence_length is %d %p\n", sequence_length, (void *)sequence_length);
   int error = cuLaunchKernel(kernel_function,
-  1, 1, 1, // grid x, y, z
+  n_heads, 1, 1, // grid x, y, z
   32, 1, 1, // block x, y, z
   0, 0, NULL, config);
   if (error != CUDA_SUCCESS) {
