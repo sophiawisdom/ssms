@@ -4,14 +4,14 @@ import sys
 import triton
 
 print("compiling mimo_done")
-result = subprocess.run(["/usr/local/cuda-11.7/bin/ptxas", "--gpu-name=sm_80", "mimo_done.ptx", "-o", "mimo_done.o"])
+result = subprocess.run(["/usr/local/cuda/bin/ptxas", "--gpu-name=sm_80", "mimo_done.ptx", "-o", "mimo_done.o"])
 if result.returncode != 0:
     print("FAILED TO COMPILE!!! RESULT IS", result)
     sys.exit(1)
 print("completed compiling")
 
 print("about to compile")
-mimo = load(name="ptxer", sources=["ptxer.cpp", "mimo.cu"], extra_ldflags=["-lcuda"])
+mimo = load(name="mimo", sources=["mimo.cpp", "mimo.cu"], extra_ldflags=["-lcuda"])
 print("compiled")
 
 STATE_SIZE = 64
