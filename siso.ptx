@@ -3,7 +3,7 @@
 //
 
 .version 7.4
-.target sm_86
+.target sm_80
 .address_size 64
 
 .visible .entry siso_kernel(
@@ -96,7 +96,7 @@
         .reg .u32 idx;
         mov.u32 idx, 0;
 LOOP:
-        ld.global.L2::64B.f32 u_k, [our_u_ptr];
+        ld.global.f32 u_k, [our_u_ptr];
 
         mul.ftz.f32 x_0, x_0, a_0;
         mul.ftz.f32 x_1, x_1, a_1;
@@ -132,9 +132,9 @@ LOOP:
 
         st.global.f32 [our_out_ptr], val_0;
 
-        add.u64 our_out_ptr, our_out_ptr, 4;
-        add.u64 our_u_ptr, our_u_ptr, 4;
-        add.u32 idx, idx, 1;
+        // add.u64 our_out_ptr, our_out_ptr, 4;
+        // add.u64 our_u_ptr, our_u_ptr, 4;
+        // add.u32 idx, idx, 1;
         setp.lt.u32     should_loop, idx, sequence_length;
         @should_loop bra LOOP;
         ret;

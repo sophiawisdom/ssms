@@ -1,5 +1,6 @@
 import torch
 import sys
+sys.path.append("/home/ubuntu/.local/lib/python3.8/site-packages")
 import time
 import math
 import subprocess
@@ -8,7 +9,7 @@ import triton
 import triton.language as tl
 
 print("compiling siso")
-result = subprocess.run(["/usr/local/cuda/bin/ptxas", "--gpu-name=sm_86", "siso.ptx", "-o", "siso.o"])
+result = subprocess.run(["ptxas", "--gpu-name=sm_80", "siso.ptx", "-o", "siso.o"])
 if result.returncode != 0:
     print("FAILED TO COMPILE!!! RESULT IS", result)
     sys.exit(1)
@@ -124,8 +125,8 @@ def benchmark(size, provider, STATE_SIZE, BATCH_SIZE, N_HEADS):
         line_names=['Triton'],  # label name for the lines
         styles=[('red', 'solid'), ("blue", "solid"),],  # line styles
         ylabel='elem/s',  # label name for the y-axis
-        plot_name=f'ssm-performance @ N=64, N_HEADS=1024',  # name for the plot. Used also as a file name for saving the plot.
-        args={"N_HEADS": 1024, "STATE_SIZE": 64},  # values for function arguments not in `x_names` and `y_name`
+        plot_name=f'ssm-performance @ N=64, N_HEADS=131072',  # name for the plot. Used also as a file name for saving the plot.
+        args={"N_HEADS": 131072, "STATE_SIZE": 64},  # values for function arguments not in `x_names` and `y_name`
     ))
 def benchmark_unbatched(SEQUENCE_LENGTH, provider, STATE_SIZE, N_HEADS):
     A = torch.ones((N_HEADS, STATE_SIZE), dtype=torch.float32, device="cuda")
@@ -142,7 +143,8 @@ def benchmark_unbatched(SEQUENCE_LENGTH, provider, STATE_SIZE, N_HEADS):
     elems = lambda ms: SEQUENCE_LENGTH * N_HEADS * 1000/(ms)
     return elems(ms), elems(max_ms), elems(min_ms)
 
-N_HEADS = 1024
+
+N_HEADS = 131072
 STATE_SIZE = 64
 SEQUENCE_LENGTH = 512
 A = torch.ones((N_HEADS, STATE_SIZE), dtype=torch.float32, device="cuda")
@@ -152,5 +154,6 @@ sequence = torch.ones((N_HEADS, SEQUENCE_LENGTH), dtype=torch.float32, device="c
 output = siso.forward(sequence, A, B, C, SEQUENCE_LENGTH)
 print("sum output is", output.sum())
 
-benchmark_unbatched.run(print_data=True)
+if len(sys.argv) > 1 and sys.argv[1] == "benchmark":
+    benchmark_unbatched.run(print_data=True)
 sys.exit(1)
