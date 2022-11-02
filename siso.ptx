@@ -14,7 +14,7 @@
         .param .u64 output_ptr_param,
         .param .u32 sequence_length_param // BE CAREFUL, THIS IS U32
 )
-.maxntid 8, 4, 1
+.maxntid 4, 8, 1
 {
         .reg .pred should_loop;
 
@@ -34,8 +34,9 @@
 
         // run with block dims ({x, y, z}) {N_HEADS//4, 1, 1} thread dims {8, N_HEADS//4, 1]
         .reg .u32 head_idx;
-        mov.u32 head_idx, %ctaid.x;
-        mul.lo.u32 head_idx, head_idx, 4;
+        .reg .u32 ctaid;
+        mov.u32 ctaid, %ctaid.x;
+        mul.lo.u32 head_idx, ctaid, 8;
         .reg .u32 thread_id_y;
         mov.u32 thread_id_y, %tid.y;
         add.u32 head_idx, head_idx, thread_id_y;
@@ -46,7 +47,7 @@
         mul.wide.u32 thread_in_head_times_32, thread_in_head, 32;
 
         .reg .u64 parameters_offset;
-        mul.wide.u32 parameters_offset, head_idx, 64;
+        mul.wide.u32 parameters_offset, head_idx, 128;
         add.u64 parameters_offset, parameters_offset, thread_in_head_times_32;
 
         .reg .f32 a_<8>;
@@ -79,7 +80,8 @@
         mov.f32 x_7, 0f00000000;
 
         .reg .u64 head_idx_times_sequence_length;
-        mul.wide.u32 head_idx_times_sequence_length, head_idx, sequence_length;
+        mul.wide.u32 head_idx_times_sequence_length, head_idx, sequence_length; // input and output are {N_HEADS, SEQUENCE_LENGTH}
+        mul.lo.u64 head_idx_times_sequence_length, head_idx_times_sequence_length, 4; // 4 bytes
 
         // sequence is {N_HEADS, SEQUENCE_LENGTH}
         .reg .u64 our_u_ptr;
@@ -107,14 +109,14 @@ LOOP:
         mul.ftz.f32 x_6, x_6, a_6;
         mul.ftz.f32 x_7, x_7, a_7;
 
-        fma.rz.ftz.f32 x_0, x_0, b_0, u_k;
-        fma.rz.ftz.f32 x_1, x_1, b_1, u_k;
-        fma.rz.ftz.f32 x_2, x_2, b_2, u_k;
-        fma.rz.ftz.f32 x_3, x_3, b_3, u_k;
-        fma.rz.ftz.f32 x_4, x_4, b_4, u_k;
-        fma.rz.ftz.f32 x_5, x_5, b_5, u_k;
-        fma.rz.ftz.f32 x_6, x_6, b_6, u_k;
-        fma.rz.ftz.f32 x_7, x_7, b_7, u_k;
+        fma.rz.ftz.f32 x_0, u_k, b_0, x_0;
+        fma.rz.ftz.f32 x_1, u_k, b_1, x_1;
+        fma.rz.ftz.f32 x_2, u_k, b_2, x_2;
+        fma.rz.ftz.f32 x_3, u_k, b_3, x_3;
+        fma.rz.ftz.f32 x_4, u_k, b_4, x_4;
+        fma.rz.ftz.f32 x_5, u_k, b_5, x_5;
+        fma.rz.ftz.f32 x_6, u_k, b_6, x_6;
+        fma.rz.ftz.f32 x_7, u_k, b_7, x_7;
 
         mul.ftz.f32 val_0, x_0, c_0;
         fma.rz.ftz.f32 val_0, x_1, c_1, val_0;
@@ -132,10 +134,10 @@ LOOP:
 
         st.global.f32 [our_out_ptr], val_0;
 
-        // add.u64 our_out_ptr, our_out_ptr, 4;
-        // add.u64 our_u_ptr, our_u_ptr, 4;
-        // add.u32 idx, idx, 1;
-        setp.lt.u32     should_loop, idx, sequence_length;
+        add.u64 our_out_ptr, our_out_ptr, 4;
+        add.u64 our_u_ptr, our_u_ptr, 4;
+        sub.u32 sequence_length, sequence_length, 1;
+        setp.gt.u32     should_loop, sequence_length, 0;
         @should_loop bra LOOP;
         ret;
 }

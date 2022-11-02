@@ -34,10 +34,10 @@ static void initialize_cuda() {
 
     err = cuModuleGetFunction(&kernel_function, ptx_module, "siso_kernel");
     if (err != CUDA_SUCCESS) {
-        fprintf(stderr, "Failed to get function");
+        fprintf(stderr, "Failed to get function\n");
     }
 
-    printf("SISO initialized!");
+    printf("SISO initialized!\n");
 }
 
 unsigned int old_sequence_length = 0;
@@ -90,9 +90,10 @@ torch::Tensor siso_cuda_forward(
 #ifdef DEBUG
   printf("about to cuLaunchKernel, sequence_length is %d\n", sequence_length);
 #endif
+  printf("launching with %d grid\n", num_heads/8);
   int error = cuLaunchKernel(kernel_function,
-  num_heads/4, 1, 1, // grid x, y, z
-  8, 4, 1, // block x, y, z
+  num_heads/8, 1, 1, // grid x, y, z
+  4, 8, 1, // block x, y, z
   0, 0, NULL, config);
   if (error != CUDA_SUCCESS) {
     cudaError_t lastErr = cudaGetLastError();
