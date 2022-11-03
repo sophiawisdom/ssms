@@ -40,35 +40,21 @@ static void initialize_cuda() {
     printf("Monarch initialized!\n");
 }
 
-unsigned int old_sequence_length = 0;
-
 torch::Tensor monarch_cuda_forward(
     torch::Tensor x,
-    torch::Tensor w1_bfly,
+    torch::Tensor w1_bfly
 ) {
-  auto output = torch::zeros_like(u);
+  auto output = torch::zeros_like(x);
 
-  assert(num_heads % 4 == 0);
-
-  // printf("a sizes 0 is %d\n", a.sizes()[0]);
-  unsigned int n_heads = a.sizes()[0];
+  unsigned int root_n = w1_bfly.sizes()[0];
   
-  void * argBuffer[6];
-  int argBufferSize = 5*8 + 4; // 5 pointers and an int
-  argBuffer[0] = u.data_ptr();
-  argBuffer[1] = a.data_ptr();
-  argBuffer[2] = b.data_ptr();
-  argBuffer[3] = c.data_ptr();
-  argBuffer[4] = output.data_ptr();
-  int *argBufferView = (int *)&argBuffer;
-  argBufferView[10] = sequence_length;
+  void * argBuffer[3];
+  int argBufferSize = sizeof(argBuffer);
+  argBuffer[0] = x.data_ptr();
+  argBuffer[1] = w1_bfly.data_ptr();
+  argBuffer[2] = output.data_ptr();
 
-  if (old_sequence_length != sequence_length) {
-#ifdef DEBUG
-    printf("sequence_length %u\n", sequence_length);
-#endif
-    old_sequence_length = sequence_length;
-  }
+  printf("argBufferSize %d\n", argBufferSize);
 
   for (int i = 0; i < sizeof(argBuffer)/sizeof(void *) + 1; i++) {
 #ifdef DEBUG
@@ -77,17 +63,17 @@ torch::Tensor monarch_cuda_forward(
   }
 
   void *config[] = {
-    CU_LAUNCH_PARAM_BUFFER_POINTER, argBufferView,
+    CU_LAUNCH_PARAM_BUFFER_POINTER, argBuffer,
     CU_LAUNCH_PARAM_BUFFER_SIZE,    &argBufferSize,
     CU_LAUNCH_PARAM_END,
   };
 #ifdef DEBUG
   printf("about to cuLaunchKernel, sequence_length is %d\n", sequence_length);
 #endif
-  printf("launching with %d grid\n", num_heads/8);
+  printf("launching with %d grid\n", root_n);
   int error = cuLaunchKernel(kernel_function,
-  num_heads/8, 1, 1, // grid x, y, z
-  4, 8, 1, // block x, y, z
+  root_n, 1, 1, // grid x, y, z
+  32, 8, 1, // block x, y, z
   0, 0, NULL, config);
   if (error != CUDA_SUCCESS) {
     cudaError_t lastErr = cudaGetLastError();

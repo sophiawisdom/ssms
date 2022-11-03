@@ -10,10 +10,13 @@
 // we write back out to X
 // we need 128 MMAs of size M=16 K=16 N=8 in order to do a full M=16 K=128 N=128 matmul
 
+// .extern .shared .align 4 .b16 shared_w1[128][128];
+// .extern .shared .align 4 .b16 shared_x[16][128];
+
 .visible .entry monarch_kernel(
         .param .u64 x_ptr_param,
         .param .u64 w1_bfly_ptr_param,
-        .param .u64 out_ptr_param // TODO: we can just reuse X (this is better for debugging though)
+        .param .u64 out_ptr_param
 )
 .maxntid 32, 8, 1
 {
@@ -39,56 +42,70 @@
     add.u64 global_x_load_ptr, global_x_ptr, shared_x_offset_64;
 
     // TODO: we kind of want cs and not ca?
-    // TODO FOR REAL: DO THE PERMUTATION HERE
+    // TODO FOR REAL: DO THE PERMUTATION HERE, WHICH WE CURRENTLY DON'T DO
     cp.async.ca.shared.global [shared_x_store_ptr], [global_x_load_ptr], 16;
 
+    .reg .u64 global_w1_ptr;
+    ld.param.u64 global_w1_ptr, [w1_bfly_ptr_param];
     .reg .u64 shared_w1_ptr_register;
     mov.u64 shared_w1_ptr_register, shared_w1;
     .reg .u64 shared_w1_store_ptr;
     add.u64 shared_w1_store_ptr, shared_w1_ptr_register, shared_x_offset_64;
+    // TODO: make sure global_w1_load_ptr gets the correct matrix
     .reg .u64 global_w1_load_ptr;
-    add.u64 global_w1_load_ptr, global_w1_load_ptr, shared_x_offset_64;
+    add.u64 global_w1_load_ptr, global_w1_ptr, shared_x_offset_64;
+
     cp.async.ca.shared.global [shared_w1_store_ptr + 0], [global_w1_load_ptr + 0], 16;
+    cp.async.commit_group;
     cp.async.ca.shared.global [shared_w1_store_ptr + 4096], [global_w1_load_ptr + 4096], 16;
+    cp.async.commit_group;
     cp.async.ca.shared.global [shared_w1_store_ptr + 8192], [global_w1_load_ptr + 8192], 16;
+    cp.async.commit_group;
     cp.async.ca.shared.global [shared_w1_store_ptr + 12288], [global_w1_load_ptr + 12288], 16;
+    cp.async.commit_group;
     cp.async.ca.shared.global [shared_w1_store_ptr + 16384], [global_w1_load_ptr + 16384], 16;
+    cp.async.commit_group;
     cp.async.ca.shared.global [shared_w1_store_ptr + 20480], [global_w1_load_ptr + 20480], 16;
+    cp.async.commit_group;
     cp.async.ca.shared.global [shared_w1_store_ptr + 24576], [global_w1_load_ptr + 24576], 16;
+    cp.async.commit_group;
     cp.async.ca.shared.global [shared_w1_store_ptr + 28672], [global_w1_load_ptr + 28672], 16;
+    cp.async.commit_group;
+
+    // each warp essentially implements the below for 0:8 and 8:16. (a.shape == (16,128) b.shape == (128,128))
+    // np.sum([a[:,i:i+16] @ b[i:i+16,0:8] for i in range(0, 128, 16)], axis=0)
+    // we can get the indices we need for each step with np.arange(16*128).reshape((16, 128))[:,0:16],
+    // np.arange(16*128).reshape((16, 128))[:,16:32] etc.
+    // for indices,
+    // t0 = 0, t1 = 8, t2 = 128, t3 = 136
+    .reg .u32 ldmatrix_offset;
+    and.b32 ldmatrix_offset, tid_x, 30;
+    shl.b32 ldmatrix_offset, ldmatrix_offset, 7;
+
+    .reg .u32 last_bit; // every other thread is in the second half of the 16x16 matrix, so increment by 16
+    and.b32 last_bit, tid_x, 1;
+    shl.b32 last_bit, last_bit, 4;
+    add.u32 ldmatrix_offset, ldmatrix_offset, last_bit;
+
+    // calculate x_ldmatrix_ptr
+    .reg .u64 x_ldmatrix_offset_64;
+    cvt.u64.u32 x_ldmatrix_offset_64, ldmatrix_offset;
+    .reg .u64 x_ldmatrix_ptr;
+    add.u64 x_ldmatrix_ptr, shared_x_ptr_register, x_ldmatrix_offset_64;
 
     .reg .u32 warp_id;
     mov.u32 warp_id, %tid.y;
-    .reg .u32 warp_x_offset;
-    mul.lo.u32 warp_x_offset, warp_id, 512;
+    .reg .u32 warp_weights_offset;
+    shl.b32 warp_weights_offset, warp_id, 4; // multiply by 16
+    // we want b_indices[0:16, warp_id*16:(warp_id+1):16] and then b_indices[16:32, warp_id*16:(warp_id+1):16]
+    .reg .u32 weights_ldmatrix_offset;
+    add.u32 weights_ldmatrix_offset, ldmatrix_offset, warp_weights_offset;
 
-    .reg .u32 row_offset;
-    and.b32 row_offset, tid_x, 7;
-    shl.b32 row_offset, row_offset, 5;
-
-    .reg .u32 second_matrix_part_offset;
-    and.b32 second_matrix_part_offset, tid_x, 8;
-    shl.b32 second_matrix_part_offset, second_matrix_part_offset, 1;
-
-    .reg .u32 second_matrix_half_offset;
-    and.b32 second_matrix_half_offset, tid_x, 16;
-    shl.b32 second_matrix_half_offset, second_matrix_half_offset, 4;
-
-    .reg .u32 ldmatrix_offset;
-    add.u32 ldmatrix_offset, row_offset, second_matrix_part_offset;
-    add.u32 ldmatrix_offset, ldmatrix_offset, second_matrix_half_offset;
-    // add.u32 ldmatrix_offset, ldmatrix_offset, warp_x_offset;
-    
-    .reg .u64 ldmatrix_offset_64;
-    cvt.u64.u32 ldmatrix_offset_64, ldmatrix_offset;
-
-    .reg .u64 x_ldmatrix_ptr;
-    add.u64 x_ldmatrix_ptr, shared_x_ptr_register, ldmatrix_offset_64;
-
+    .reg .u64 weights_ldmatrix_offset_64;
+    cvt.u64.u32 weights_ldmatrix_offset_64, weights_ldmatrix_offset;
     .reg .u64 weights_ldmatrix_ptr;
-    add.u64 weights_ldmatrix_ptr, shared_w1_ptr_register, ldmatrix_offset_64;
+    add.u64 weights_ldmatrix_ptr, shared_w1_ptr_register, weights_ldmatrix_offset_64;
 
-    // todo wait here for first cp async to arrive
     .reg .f32 out_<8>;
     mov.f32 out_0, 0f00000000;
     mov.f32 out_1, 0f00000000;
@@ -99,50 +116,67 @@
     mov.f32 out_6, 0f00000000;
     mov.f32 out_7, 0f00000000;
 
-    .reg .b32 x_<32>;
-    .reg .b32 weights_<32>;
+    .reg .b32 x_<4>;
+    mov.f32 x_0, 0f00000000;
+    mov.f32 x_1, 0f00000000;
+    mov.f32 x_2, 0f00000000;
+    mov.f32 x_3, 0f00000000;
+    .reg .b32 weights_<4>;
 
-    // todo wait here for second cp async group to arrive
-    ldmatrix.sync.aligned.m8n8.x4.b16 {x_0, x_1, x_2, x_3}, [x_ldmatrix_ptr + 0];
+    cp.async.wait_all; // TODO: structure the cp async so we don't have to do this
+
+    // cp.async.wait_group 7;
+    ldmatrix.sync.aligned.m8n8.x4.shared.b16 {x_0, x_1, x_2, x_3}, [x_ldmatrix_ptr + 0];
     // TODO FOR REAL: make sure that the first w1 cp async gets the first row, second second row, etc.
-    ldmatrix.sync.aligned.m8n8.x4.b16 {weights_0, weights_1, weights_2, weights_3}, [weights_ldmatrix_ptr + 0];
+    ldmatrix.sync.aligned.m8n8.x4.trans.shared.b16 {weights_0, weights_1, weights_2, weights_3}, [weights_ldmatrix_ptr + 0];
+    mov.f32 weights_2, 0f00000000;
+    mov.f32 weights_3, 0f00000000;
     mma.sync.aligned.m16n8k16.row.col.f32.bf16.bf16.f32 {out_0, out_1, out_2, out_3}, {x_0, x_1, x_2, x_3}, {weights_0, weights_1}, {out_0, out_1, out_2, out_3};
     mma.sync.aligned.m16n8k16.row.col.f32.bf16.bf16.f32 {out_4, out_5, out_6, out_7}, {x_0, x_1, x_2, x_3}, {weights_2, weights_3}, {out_4, out_5, out_6, out_7};
 
-    ldmatrix.sync.aligned.m8n8.x4.b16 {x_0, x_1, x_2, x_3}, [x_ldmatrix_ptr + 512];
-    ldmatrix.sync.aligned.m8n8.x4.b16 {weights_0, weights_1, weights_2, weights_3}, [weights_ldmatrix_ptr + 512];
+    /*
+    // cp.async.wait_group 6;
+    ldmatrix.sync.aligned.m8n8.x4.shared.b16 {x_0, x_1, x_2, x_3}, [x_ldmatrix_ptr + 32];
+    ldmatrix.sync.aligned.m8n8.x4.trans.shared.b16 {weights_0, weights_1, weights_2, weights_3}, [weights_ldmatrix_ptr + 2048];
     mma.sync.aligned.m16n8k16.row.col.f32.bf16.bf16.f32 {out_0, out_1, out_2, out_3}, {x_0, x_1, x_2, x_3}, {weights_0, weights_1}, {out_0, out_1, out_2, out_3};
     mma.sync.aligned.m16n8k16.row.col.f32.bf16.bf16.f32 {out_4, out_5, out_6, out_7}, {x_0, x_1, x_2, x_3}, {weights_2, weights_3}, {out_4, out_5, out_6, out_7};
 
-    ldmatrix.sync.aligned.m8n8.x4.b16 {x_0, x_1, x_2, x_3}, [x_ldmatrix_ptr + 1024];
-    ldmatrix.sync.aligned.m8n8.x4.b16 {weights_0, weights_1, weights_2, weights_3}, [weights_ldmatrix_ptr + 1024];
+    // cp.async.wait_group 5;
+    ldmatrix.sync.aligned.m8n8.x4.shared.b16 {x_0, x_1, x_2, x_3}, [x_ldmatrix_ptr + 64];
+    ldmatrix.sync.aligned.m8n8.x4.trans.shared.b16 {weights_0, weights_1, weights_2, weights_3}, [weights_ldmatrix_ptr + 4096];
     mma.sync.aligned.m16n8k16.row.col.f32.bf16.bf16.f32 {out_0, out_1, out_2, out_3}, {x_0, x_1, x_2, x_3}, {weights_0, weights_1}, {out_0, out_1, out_2, out_3};
     mma.sync.aligned.m16n8k16.row.col.f32.bf16.bf16.f32 {out_4, out_5, out_6, out_7}, {x_0, x_1, x_2, x_3}, {weights_2, weights_3}, {out_4, out_5, out_6, out_7};
 
-    ldmatrix.sync.aligned.m8n8.x4.b16 {x_0, x_1, x_2, x_3}, [x_ldmatrix_ptr + 1536];
-    ldmatrix.sync.aligned.m8n8.x4.b16 {weights_0, weights_1, weights_2, weights_3}, [weights_ldmatrix_ptr + 1536];
+    // cp.async.wait_group 4;
+    ldmatrix.sync.aligned.m8n8.x4.shared.b16 {x_0, x_1, x_2, x_3}, [x_ldmatrix_ptr + 96];
+    ldmatrix.sync.aligned.m8n8.x4.trans.shared.b16 {weights_0, weights_1, weights_2, weights_3}, [weights_ldmatrix_ptr + 6144];
     mma.sync.aligned.m16n8k16.row.col.f32.bf16.bf16.f32 {out_0, out_1, out_2, out_3}, {x_0, x_1, x_2, x_3}, {weights_0, weights_1}, {out_0, out_1, out_2, out_3};
     mma.sync.aligned.m16n8k16.row.col.f32.bf16.bf16.f32 {out_4, out_5, out_6, out_7}, {x_0, x_1, x_2, x_3}, {weights_2, weights_3}, {out_4, out_5, out_6, out_7};
 
-    ldmatrix.sync.aligned.m8n8.x4.b16 {x_0, x_1, x_2, x_3}, [x_ldmatrix_ptr + 2048];
-    ldmatrix.sync.aligned.m8n8.x4.b16 {weights_0, weights_1, weights_2, weights_3}, [weights_ldmatrix_ptr + 2048];
+    // cp.async.wait_group 3;
+    ldmatrix.sync.aligned.m8n8.x4.shared.b16 {x_0, x_1, x_2, x_3}, [x_ldmatrix_ptr + 128];
+    ldmatrix.sync.aligned.m8n8.x4.trans.shared.b16 {weights_0, weights_1, weights_2, weights_3}, [weights_ldmatrix_ptr + 8192];
     mma.sync.aligned.m16n8k16.row.col.f32.bf16.bf16.f32 {out_0, out_1, out_2, out_3}, {x_0, x_1, x_2, x_3}, {weights_0, weights_1}, {out_0, out_1, out_2, out_3};
     mma.sync.aligned.m16n8k16.row.col.f32.bf16.bf16.f32 {out_4, out_5, out_6, out_7}, {x_0, x_1, x_2, x_3}, {weights_2, weights_3}, {out_4, out_5, out_6, out_7};
 
-    ldmatrix.sync.aligned.m8n8.x4.b16 {x_0, x_1, x_2, x_3}, [x_ldmatrix_ptr + 2560];
-    ldmatrix.sync.aligned.m8n8.x4.b16 {weights_0, weights_1, weights_2, weights_3}, [weights_ldmatrix_ptr + 2560];
+    // cp.async.wait_group 2;
+    ldmatrix.sync.aligned.m8n8.x4.shared.b16 {x_0, x_1, x_2, x_3}, [x_ldmatrix_ptr + 160];
+    ldmatrix.sync.aligned.m8n8.x4.trans.shared.b16 {weights_0, weights_1, weights_2, weights_3}, [weights_ldmatrix_ptr + 10240];
     mma.sync.aligned.m16n8k16.row.col.f32.bf16.bf16.f32 {out_0, out_1, out_2, out_3}, {x_0, x_1, x_2, x_3}, {weights_0, weights_1}, {out_0, out_1, out_2, out_3};
     mma.sync.aligned.m16n8k16.row.col.f32.bf16.bf16.f32 {out_4, out_5, out_6, out_7}, {x_0, x_1, x_2, x_3}, {weights_2, weights_3}, {out_4, out_5, out_6, out_7};
 
-    ldmatrix.sync.aligned.m8n8.x4.b16 {x_0, x_1, x_2, x_3}, [x_ldmatrix_ptr + 3072];
-    ldmatrix.sync.aligned.m8n8.x4.b16 {weights_0, weights_1, weights_2, weights_3}, [weights_ldmatrix_ptr + 3072];
+    // cp.async.wait_group 1;
+    ldmatrix.sync.aligned.m8n8.x4.shared.b16 {x_0, x_1, x_2, x_3}, [x_ldmatrix_ptr + 192];
+    ldmatrix.sync.aligned.m8n8.x4.trans.shared.b16 {weights_0, weights_1, weights_2, weights_3}, [weights_ldmatrix_ptr + 12288];
     mma.sync.aligned.m16n8k16.row.col.f32.bf16.bf16.f32 {out_0, out_1, out_2, out_3}, {x_0, x_1, x_2, x_3}, {weights_0, weights_1}, {out_0, out_1, out_2, out_3};
     mma.sync.aligned.m16n8k16.row.col.f32.bf16.bf16.f32 {out_4, out_5, out_6, out_7}, {x_0, x_1, x_2, x_3}, {weights_2, weights_3}, {out_4, out_5, out_6, out_7};
 
-    ldmatrix.sync.aligned.m8n8.x4.b16 {x_0, x_1, x_2, x_3}, [x_ldmatrix_ptr + 3584];
-    ldmatrix.sync.aligned.m8n8.x4.b16 {weights_0, weights_1, weights_2, weights_3}, [weights_ldmatrix_ptr + 3584];
+    // cp.async.wait_group 0;
+    ldmatrix.sync.aligned.m8n8.x4.shared.b16 {x_0, x_1, x_2, x_3}, [x_ldmatrix_ptr + 224];
+    ldmatrix.sync.aligned.m8n8.x4.trans.shared.b16 {weights_0, weights_1, weights_2, weights_3}, [weights_ldmatrix_ptr + 14336];
     mma.sync.aligned.m16n8k16.row.col.f32.bf16.bf16.f32 {out_0, out_1, out_2, out_3}, {x_0, x_1, x_2, x_3}, {weights_0, weights_1}, {out_0, out_1, out_2, out_3};
     mma.sync.aligned.m16n8k16.row.col.f32.bf16.bf16.f32 {out_4, out_5, out_6, out_7}, {x_0, x_1, x_2, x_3}, {weights_2, weights_3}, {out_4, out_5, out_6, out_7};
+    */
 
     .reg .b32 out_small_<4>;
     cvt.rn.bf16x2.f32 out_small_0, out_1, out_0;
@@ -150,12 +184,44 @@
     cvt.rn.bf16x2.f32 out_small_2, out_5, out_4;
     cvt.rn.bf16x2.f32 out_small_3, out_7, out_6;
 
-    .reg .u64 out_ptr_val;
-    ld.param.u64 out_ptr_val, [out_ptr_param];
+    .reg .u64 out_ptr_reg;
+    ld.param.u64 out_ptr_reg, [out_ptr_param];
+
+    .reg .u32 withinrow_offset;
+    and.b32 withinrow_offset, tid_x, 3;
+    shl.b32 withinrow_offset, withinrow_offset, 2;
+
+    .reg .u32 betweenrow_offset;
+    and.b32 betweenrow_offset, tid_x, 28;
+    shl.b32 betweenrow_offset, betweenrow_offset, 6;
+
+    .reg .u32 warp_offset;
+    shl.b32 warp_offset, tid_y, 5;
+
+    .reg .u32 out_offset;
+    add.u32 out_offset, withinrow_offset, betweenrow_offset;
+    add.u32 out_offset, out_offset, warp_offset;
+
+    .reg .u64 out_offset_64;
+    cvt.u64.u32 out_offset_64, out_offset;
+
+    add.u64 out_ptr_reg, out_ptr_reg, out_offset_64;
+
+    // out_small_0 is two values of c_indices[:8,:warp_id*8],
+    // out_small_1 is two values of c_indices[8:16,:warp_id*8]
+    // out_small_2 is two values of c_indices[:8,warp_id*8:warp_id*8+8]
+    // out_small_3 is two values of c_indices[8:16,warp_id*8:warp_id*8+8]
 
     // TODO: permute back here!
-    st.global.b32 [out_ptr_val], out_small_0;
-    st.global.b32 [out_ptr_val+4], out_small_1;
-    st.global.b32 [out_ptr_val+8], out_small_2;
-    st.global.b32 [out_ptr_val+12], out_small_3;
+    st.global.b32 [out_ptr_reg + 0], out_small_0;
+    st.global.b32 [out_ptr_reg + 2048], out_small_1;
+    st.global.b32 [out_ptr_reg + 16], out_small_2;
+    st.global.b32 [out_ptr_reg + 2064], out_small_3;
+    /*
+    st.global.b32 [out_ptr_reg + 0], x_0;
+    st.global.b32 [out_ptr_reg + 2048], x_1;
+    st.global.b32 [out_ptr_reg + 16],   x_2;
+    st.global.b32 [out_ptr_reg + 2064], x_3;
+    */
+    ret;
 }

@@ -100,6 +100,7 @@
 LOOP:
         ld.global.f32 u_k, [our_u_ptr];
 
+        // A * X
         mul.ftz.f32 x_0, x_0, a_0;
         mul.ftz.f32 x_1, x_1, a_1;
         mul.ftz.f32 x_2, x_2, a_2;
@@ -109,6 +110,7 @@ LOOP:
         mul.ftz.f32 x_6, x_6, a_6;
         mul.ftz.f32 x_7, x_7, a_7;
 
+        // X += B*u
         fma.rz.ftz.f32 x_0, u_k, b_0, x_0;
         fma.rz.ftz.f32 x_1, u_k, b_1, x_1;
         fma.rz.ftz.f32 x_2, u_k, b_2, x_2;
@@ -118,6 +120,7 @@ LOOP:
         fma.rz.ftz.f32 x_6, u_k, b_6, x_6;
         fma.rz.ftz.f32 x_7, u_k, b_7, x_7;
 
+        // sum(X*C)
         mul.ftz.f32 val_0, x_0, c_0;
         fma.rz.ftz.f32 val_0, x_1, c_1, val_0;
         fma.rz.ftz.f32 val_0, x_2, c_2, val_0;
@@ -132,6 +135,7 @@ LOOP:
         shfl.sync.bfly.b32 val_1, val_2, 1, 0x1f, 0xffffffff;
         add.rz.ftz.f32 val_0, val_1, val_2;
 
+        // write out sum(X*C)
         st.global.f32 [our_out_ptr], val_0;
 
         add.u64 our_out_ptr, our_out_ptr, 4;
