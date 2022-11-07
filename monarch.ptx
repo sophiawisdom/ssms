@@ -137,43 +137,43 @@
     /*
     // cp.async.wait_group 6;
     ldmatrix.sync.aligned.m8n8.x4.shared.b16 {x_0, x_1, x_2, x_3}, [x_ldmatrix_ptr + 32];
-    ldmatrix.sync.aligned.m8n8.x4.trans.shared.b16 {weights_0, weights_1, weights_2, weights_3}, [weights_ldmatrix_ptr + 2048];
+    ldmatrix.sync.aligned.m8n8.x4.trans.shared.b16 {weights_0, weights_1, weights_2, weights_3}, [weights_ldmatrix_ptr + 4096];
     mma.sync.aligned.m16n8k16.row.col.f32.bf16.bf16.f32 {out_0, out_1, out_2, out_3}, {x_0, x_1, x_2, x_3}, {weights_0, weights_1}, {out_0, out_1, out_2, out_3};
     mma.sync.aligned.m16n8k16.row.col.f32.bf16.bf16.f32 {out_4, out_5, out_6, out_7}, {x_0, x_1, x_2, x_3}, {weights_2, weights_3}, {out_4, out_5, out_6, out_7};
 
     // cp.async.wait_group 5;
     ldmatrix.sync.aligned.m8n8.x4.shared.b16 {x_0, x_1, x_2, x_3}, [x_ldmatrix_ptr + 64];
-    ldmatrix.sync.aligned.m8n8.x4.trans.shared.b16 {weights_0, weights_1, weights_2, weights_3}, [weights_ldmatrix_ptr + 4096];
+    ldmatrix.sync.aligned.m8n8.x4.trans.shared.b16 {weights_0, weights_1, weights_2, weights_3}, [weights_ldmatrix_ptr + 8192];
     mma.sync.aligned.m16n8k16.row.col.f32.bf16.bf16.f32 {out_0, out_1, out_2, out_3}, {x_0, x_1, x_2, x_3}, {weights_0, weights_1}, {out_0, out_1, out_2, out_3};
     mma.sync.aligned.m16n8k16.row.col.f32.bf16.bf16.f32 {out_4, out_5, out_6, out_7}, {x_0, x_1, x_2, x_3}, {weights_2, weights_3}, {out_4, out_5, out_6, out_7};
 
     // cp.async.wait_group 4;
     ldmatrix.sync.aligned.m8n8.x4.shared.b16 {x_0, x_1, x_2, x_3}, [x_ldmatrix_ptr + 96];
-    ldmatrix.sync.aligned.m8n8.x4.trans.shared.b16 {weights_0, weights_1, weights_2, weights_3}, [weights_ldmatrix_ptr + 6144];
+    ldmatrix.sync.aligned.m8n8.x4.trans.shared.b16 {weights_0, weights_1, weights_2, weights_3}, [weights_ldmatrix_ptr + 12288];
     mma.sync.aligned.m16n8k16.row.col.f32.bf16.bf16.f32 {out_0, out_1, out_2, out_3}, {x_0, x_1, x_2, x_3}, {weights_0, weights_1}, {out_0, out_1, out_2, out_3};
     mma.sync.aligned.m16n8k16.row.col.f32.bf16.bf16.f32 {out_4, out_5, out_6, out_7}, {x_0, x_1, x_2, x_3}, {weights_2, weights_3}, {out_4, out_5, out_6, out_7};
 
     // cp.async.wait_group 3;
     ldmatrix.sync.aligned.m8n8.x4.shared.b16 {x_0, x_1, x_2, x_3}, [x_ldmatrix_ptr + 128];
-    ldmatrix.sync.aligned.m8n8.x4.trans.shared.b16 {weights_0, weights_1, weights_2, weights_3}, [weights_ldmatrix_ptr + 8192];
+    ldmatrix.sync.aligned.m8n8.x4.trans.shared.b16 {weights_0, weights_1, weights_2, weights_3}, [weights_ldmatrix_ptr + 16384];
     mma.sync.aligned.m16n8k16.row.col.f32.bf16.bf16.f32 {out_0, out_1, out_2, out_3}, {x_0, x_1, x_2, x_3}, {weights_0, weights_1}, {out_0, out_1, out_2, out_3};
     mma.sync.aligned.m16n8k16.row.col.f32.bf16.bf16.f32 {out_4, out_5, out_6, out_7}, {x_0, x_1, x_2, x_3}, {weights_2, weights_3}, {out_4, out_5, out_6, out_7};
 
     // cp.async.wait_group 2;
     ldmatrix.sync.aligned.m8n8.x4.shared.b16 {x_0, x_1, x_2, x_3}, [x_ldmatrix_ptr + 160];
-    ldmatrix.sync.aligned.m8n8.x4.trans.shared.b16 {weights_0, weights_1, weights_2, weights_3}, [weights_ldmatrix_ptr + 10240];
+    ldmatrix.sync.aligned.m8n8.x4.trans.shared.b16 {weights_0, weights_1, weights_2, weights_3}, [weights_ldmatrix_ptr + 20480];
     mma.sync.aligned.m16n8k16.row.col.f32.bf16.bf16.f32 {out_0, out_1, out_2, out_3}, {x_0, x_1, x_2, x_3}, {weights_0, weights_1}, {out_0, out_1, out_2, out_3};
     mma.sync.aligned.m16n8k16.row.col.f32.bf16.bf16.f32 {out_4, out_5, out_6, out_7}, {x_0, x_1, x_2, x_3}, {weights_2, weights_3}, {out_4, out_5, out_6, out_7};
 
     // cp.async.wait_group 1;
     ldmatrix.sync.aligned.m8n8.x4.shared.b16 {x_0, x_1, x_2, x_3}, [x_ldmatrix_ptr + 192];
-    ldmatrix.sync.aligned.m8n8.x4.trans.shared.b16 {weights_0, weights_1, weights_2, weights_3}, [weights_ldmatrix_ptr + 12288];
+    ldmatrix.sync.aligned.m8n8.x4.trans.shared.b16 {weights_0, weights_1, weights_2, weights_3}, [weights_ldmatrix_ptr + 24576];
     mma.sync.aligned.m16n8k16.row.col.f32.bf16.bf16.f32 {out_0, out_1, out_2, out_3}, {x_0, x_1, x_2, x_3}, {weights_0, weights_1}, {out_0, out_1, out_2, out_3};
     mma.sync.aligned.m16n8k16.row.col.f32.bf16.bf16.f32 {out_4, out_5, out_6, out_7}, {x_0, x_1, x_2, x_3}, {weights_2, weights_3}, {out_4, out_5, out_6, out_7};
 
     // cp.async.wait_group 0;
     ldmatrix.sync.aligned.m8n8.x4.shared.b16 {x_0, x_1, x_2, x_3}, [x_ldmatrix_ptr + 224];
-    ldmatrix.sync.aligned.m8n8.x4.trans.shared.b16 {weights_0, weights_1, weights_2, weights_3}, [weights_ldmatrix_ptr + 14336];
+    ldmatrix.sync.aligned.m8n8.x4.trans.shared.b16 {weights_0, weights_1, weights_2, weights_3}, [weights_ldmatrix_ptr + 28672];
     mma.sync.aligned.m16n8k16.row.col.f32.bf16.bf16.f32 {out_0, out_1, out_2, out_3}, {x_0, x_1, x_2, x_3}, {weights_0, weights_1}, {out_0, out_1, out_2, out_3};
     mma.sync.aligned.m16n8k16.row.col.f32.bf16.bf16.f32 {out_4, out_5, out_6, out_7}, {x_0, x_1, x_2, x_3}, {weights_2, weights_3}, {out_4, out_5, out_6, out_7};
     */
