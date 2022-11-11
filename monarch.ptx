@@ -27,11 +27,11 @@
     mov.u32 tid_x, %tid.x;
     .reg .u32 tid_y;
     mov.u32 tid_y, %tid.y;
-    .reg .u32 shared_x_offset;
-    mul.lo.u32 shared_x_offset, tid_y, 32; // 32 threads
-    add.u32 shared_x_offset, shared_x_offset, tid_x;
+    .reg .u32 overall_thread_num;
+    mul.lo.u32 overall_thread_num, tid_y, 32; // 32 threads
+    add.u32 overall_thread_num, overall_thread_num, tid_x;
     .reg .u64 shared_x_offset_64;
-    mul.wide.u32 shared_x_offset_64, shared_x_offset, 16; // load 16 bytes per thread
+    mul.wide.u32 shared_x_offset_64, overall_thread_num, 16; // load 16 bytes per thread
     .reg .u64 shared_x_ptr_register;
     mov.u64 shared_x_ptr_register, shared_x;
     .reg .u64 shared_x_store_ptr;
@@ -50,7 +50,7 @@
     .reg .u64 shared_w1_ptr_register;
     mov.u64 shared_w1_ptr_register, shared_w1;
     .reg .u64 shared_w1_store_ptr;
-    add.u64 shared_w1_store_ptr, shared_w1_ptr_register, shared_x_offset_64;
+    add.u64 shared_w1_store_ptr, shared_w1_ptr_register, shared_x_offset_64; // each thread loads a different part, so need offsets...
     // TODO: make sure global_w1_load_ptr gets the correct matrix
     .reg .u64 global_w1_load_ptr;
     add.u64 global_w1_load_ptr, global_w1_ptr, shared_x_offset_64;
@@ -72,20 +72,40 @@
     cp.async.ca.shared.global [shared_w1_store_ptr + 28672], [global_w1_load_ptr + 28672], 16;
     cp.async.commit_group;
 
-    // each warp essentially implements the below for 0:8 and 8:16. (a.shape == (16,128) b.shape == (128,128))
     // np.sum([a[:,i:i+16] @ b[i:i+16,0:8] for i in range(0, 128, 16)], axis=0)
-    // we can get the indices we need for each step with np.arange(16*128).reshape((16, 128))[:,0:16],
-    // np.arange(16*128).reshape((16, 128))[:,16:32] etc.
-    // for indices,
-    // t0 = 0, t1 = 8, t2 = 128, t3 = 136
-    .reg .u32 ldmatrix_offset;
-    and.b32 ldmatrix_offset, tid_x, 30;
-    shl.b32 ldmatrix_offset, ldmatrix_offset, 7;
 
-    .reg .u32 last_bit; // every other thread is in the second half of the 16x16 matrix, so increment by 16
-    and.b32 last_bit, tid_x, 1;
-    shl.b32 last_bit, last_bit, 4;
-    add.u32 ldmatrix_offset, ldmatrix_offset, last_bit;
+    // if we define an A matrix as `a = np.arange(16 * 128).reshape((16, 128))`
+    // for the x matrix, what we need is a[:,:16] or equivalently a[:16,:16]. However, we cannot *directly* load a 16x16 matrix.
+    // we instead load 4 8x8 matrices: a[:8, :8], a[:8, 8:16], a[8:16, :8], and a[8:16, 8:16]. The row indices for a[:8, :8] must
+    // be in t0-t7, for a[:8, 8:16] in t8-16, etc. You can see the indices we need for t0-t7 with a[:8,:8][:,0], t8-t15 with
+    // a[:8,8:16][:,0], t16-23 with a[8:16,:8][:,0], and t24-31 with a[8:16, 8:16][:,0].
+    // the bit arithmetic you need to achieve the desired indices is:
+    // ((np.arange(32) & 8) << 0) + (((np.arange(32) & 23) - ((np.arange(32) & 16) >> 1)) << 7).
+    // to achive the desired pointers, you multiply everything by two, so:
+    // ((np.arange(32) & 8) << 1) + (((np.arange(32) & 23) - ((np.arange(32) & 16) >> 1)) << 8)
+    // when friends saw this, they said "jesus christ"
+
+    // This is the same for every warp. As we go down and compute subsequent parts of X, we now load a[:,16:32], a[:,32:48] etc.
+    // which is just a pointer increment from a[,0:16].
+
+    // ((np.arange(32) & 8) << 1)
+    .reg .u32 eight_part;
+    and.b32 eight_part, tid_x, 8;
+    shl.b32 eight_part, eight_part, 1;
+
+    .reg .u32 twenty_three_part;
+    and.b32 twenty_three_part, tid_x, 23;
+
+    .reg .u32 sixteen_part;
+    and.b32 sixteen_part, tid_x, 16;
+    shr.b32 sixteen_part, sixteen_part, 1;
+
+    .reg .u32 sixteen_twenty_three_part;
+    sub.u32 sixteen_twenty_three_part, twenty_three_part, sixteen_part;
+    shl.b32 sixteen_twenty_three_part, sixteen_twenty_three_part, 8;
+
+    .reg .u32 ldmatrix_offset;
+    add.u32 ldmatrix_offset, sixteen_twenty_three_part, eight_part;
 
     // calculate x_ldmatrix_ptr
     .reg .u64 x_ldmatrix_offset_64;
@@ -100,6 +120,7 @@
     // we want b_indices[0:16, warp_id*16:(warp_id+1):16] and then b_indices[16:32, warp_id*16:(warp_id+1):16]
     .reg .u32 weights_ldmatrix_offset;
     add.u32 weights_ldmatrix_offset, ldmatrix_offset, warp_weights_offset;
+    // add.u32 weights_ldmatrix_offset, ldmatrix_offset, 0;
 
     .reg .u64 weights_ldmatrix_offset_64;
     cvt.u64.u32 weights_ldmatrix_offset_64, weights_ldmatrix_offset;
@@ -123,18 +144,19 @@
     mov.f32 x_3, 0f00000000;
     .reg .b32 weights_<4>;
 
+    bar.sync 0;
+
     cp.async.wait_all; // TODO: structure the cp async so we don't have to do this
+
+    bar.sync 1;
 
     // cp.async.wait_group 7;
     ldmatrix.sync.aligned.m8n8.x4.shared.b16 {x_0, x_1, x_2, x_3}, [x_ldmatrix_ptr + 0];
     // TODO FOR REAL: make sure that the first w1 cp async gets the first row, second second row, etc.
     ldmatrix.sync.aligned.m8n8.x4.trans.shared.b16 {weights_0, weights_1, weights_2, weights_3}, [weights_ldmatrix_ptr + 0];
-    mov.f32 weights_2, 0f00000000;
-    mov.f32 weights_3, 0f00000000;
     mma.sync.aligned.m16n8k16.row.col.f32.bf16.bf16.f32 {out_0, out_1, out_2, out_3}, {x_0, x_1, x_2, x_3}, {weights_0, weights_1}, {out_0, out_1, out_2, out_3};
     mma.sync.aligned.m16n8k16.row.col.f32.bf16.bf16.f32 {out_4, out_5, out_6, out_7}, {x_0, x_1, x_2, x_3}, {weights_2, weights_3}, {out_4, out_5, out_6, out_7};
 
-    /*
     // cp.async.wait_group 6;
     ldmatrix.sync.aligned.m8n8.x4.shared.b16 {x_0, x_1, x_2, x_3}, [x_ldmatrix_ptr + 32];
     ldmatrix.sync.aligned.m8n8.x4.trans.shared.b16 {weights_0, weights_1, weights_2, weights_3}, [weights_ldmatrix_ptr + 4096];
@@ -176,7 +198,6 @@
     ldmatrix.sync.aligned.m8n8.x4.trans.shared.b16 {weights_0, weights_1, weights_2, weights_3}, [weights_ldmatrix_ptr + 28672];
     mma.sync.aligned.m16n8k16.row.col.f32.bf16.bf16.f32 {out_0, out_1, out_2, out_3}, {x_0, x_1, x_2, x_3}, {weights_0, weights_1}, {out_0, out_1, out_2, out_3};
     mma.sync.aligned.m16n8k16.row.col.f32.bf16.bf16.f32 {out_4, out_5, out_6, out_7}, {x_0, x_1, x_2, x_3}, {weights_2, weights_3}, {out_4, out_5, out_6, out_7};
-    */
 
     .reg .b32 out_small_<4>;
     cvt.rn.bf16x2.f32 out_small_0, out_1, out_0;
@@ -217,11 +238,15 @@
     st.global.b32 [out_ptr_reg + 2048], out_small_1;
     st.global.b32 [out_ptr_reg + 16], out_small_2;
     st.global.b32 [out_ptr_reg + 2064], out_small_3;
+
     /*
+    ldmatrix.sync.aligned.m8n8.x4.shared.b16 {x_0, x_1, x_2, x_3}, [x_ldmatrix_ptr + 0];
+
     st.global.b32 [out_ptr_reg + 0], x_0;
-    st.global.b32 [out_ptr_reg + 2048], x_1;
-    st.global.b32 [out_ptr_reg + 16],   x_2;
+    st.global.b32 [out_ptr_reg + 16], x_1;
+    st.global.b32 [out_ptr_reg + 2048], x_2;
     st.global.b32 [out_ptr_reg + 2064], x_3;
     */
+
     ret;
 }

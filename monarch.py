@@ -53,9 +53,11 @@ def forward_w1(x, w1_bfly):
 N = (16384)
 root_n = int(math.sqrt(N))
 BATCH = 16
-x = torch.ones(BATCH, N, device='cuda', dtype=torch.bfloat16)
+# x = torch.ones(BATCH, N, device='cuda', dtype=torch.bfloat16)
+x = torch.arange(BATCH*N).reshape((BATCH, N)).to(device="cuda", dtype=torch.bfloat16)
 w1 = torch.randn(root_n, root_n, root_n, device='cuda', dtype=torch.bfloat16)
-w1 = torch.arange(root_n * N).reshape((root_n, root_n, root_n)) 
+# w1 = torch.arange(root_n * N).reshape((root_n, root_n, root_n)).to(dtype=torch.bfloat16, device="cuda")
+w1 = torch.ones(root_n, root_n, root_n, dtype=torch.bfloat16, device="cuda")
 x_small = x.reshape(16*16384)[:2048].reshape(16, 128)
 true_out = x_small @ w1[0]
 print("about to call ours!")
