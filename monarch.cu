@@ -4,6 +4,7 @@
 #include <cuda_runtime.h>
 #include <cuda_bf16.h>
 #include <builtin_types.h>
+#include <mma.h>
 
 #include <vector>
 
@@ -13,7 +14,30 @@ CUdevice   device;
 CUcontext  context;
 int major = 0, minor = 0;
 
-// #define DEBUG
+using namespace nvcuda;
+
+__global__ void monarch_impl(__nv_bfloat16 *x_ptr, __nv_bfloat16 *w1_ptr, float *out_ptr) {
+  // ROOT_N = 128 (N=16384), BATCH_SIZE = 16
+  int warp = threadIdx.x / 32;
+
+  wmma::fragment<wmma::matrix_a, 16, 16, 16, __nv_bfloat16, wmma::col_major> x_frag;
+  wmma::fragment<wmma::matrix_b, 16, 16, 16, __nv_bfloat16, wmma::row_major> w1_frag;
+  wmma::fragment<wmma::accumulator, 16, 16, 16, float> out_frag;
+
+  // xs are the same for every warp, weights are different
+  __nv_bfloat16 *per_warp_w1 = w1_ptr + warp*32;
+
+  wmma::fill_fragment(out_frag, 0.0f); // initialize out to 0
+
+  for (int i = 0; i < 8; i++) {
+      wmma::load_matrix_sync(x_frag, x_ptr + (i * 16 * sizeof(__nv_bfloat16)), 128); // load which 16x16 chunk
+      wmma::load_matrix_sync(w1_frag, per_warp_w1 + (i * 2048 * sizeof(__nv_bfloat16)), 128);
+      wmma::mma_sync(out_frag, x_frag, w1_frag, out_frag);
+  }
+
+  float *per_warp_out = out_ptr + warp*32;
+  wmma::store_matrix_sync(per_warp_out, out_frag, 128, wmma::mem_row_major);
+}
 
 __attribute__((constructor))
 static void initialize_cuda() {
@@ -42,12 +66,17 @@ static void initialize_cuda() {
 
 torch::Tensor monarch_cuda_forward(
     torch::Tensor x,
-    torch::Tensor w1_bfly
+    torch::Tensor w1_bfly,
+    torch::Tensor out
 ) {
-  auto output = torch::zeros_like(x);
+  // auto output = torch::zeros_like(x);
 
   unsigned int root_n = w1_bfly.sizes()[0];
-  
+
+  monarch_impl<<<256, root_n>>>((__nv_bfloat16 *)x.data_ptr(), (__nv_bfloat16 *) w1_bfly.data_ptr(), (float *) out.data_ptr());
+  return out;
+  /*
+
   void * argBuffer[3];
   int argBufferSize = sizeof(argBuffer);
   argBuffer[0] = x.data_ptr();
@@ -86,4 +115,5 @@ torch::Tensor monarch_cuda_forward(
 #endif
 
   return output;
+  */
 }

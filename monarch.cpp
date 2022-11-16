@@ -6,7 +6,8 @@
 
 torch::Tensor monarch_cuda_forward(
     torch::Tensor x,
-    torch::Tensor w1_bfly);
+    torch::Tensor w1_bfly,
+    torch::Tensor out);
 
 #define CHECK_CUDA(x) TORCH_CHECK(x.device().is_cuda(), #x " must be a CUDA tensor")
 #define CHECK_CONTIGUOUS(x) TORCH_CHECK(x.is_contiguous(), #x " must be contiguous")
@@ -14,12 +15,14 @@ torch::Tensor monarch_cuda_forward(
 
 torch::Tensor monarch_forward(
     torch::Tensor x,
-    torch::Tensor w1_bfly) {
+    torch::Tensor w1_bfly,
+    torch::Tensor out) {
   CHECK_INPUT(x);
   CHECK_INPUT(w1_bfly);
+  CHECK_INPUT(out);
 
 
-  return {monarch_cuda_forward(x, w1_bfly)};
+  return {monarch_cuda_forward(x, w1_bfly, out)};
 }
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {

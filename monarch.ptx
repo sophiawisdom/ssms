@@ -10,9 +10,6 @@
 // we write back out to X
 // we need 128 MMAs of size M=16 K=16 N=8 in order to do a full M=16 K=128 N=128 matmul
 
-// .extern .shared .align 4 .b16 shared_w1[128][128];
-// .extern .shared .align 4 .b16 shared_x[16][128];
-
 .visible .entry monarch_kernel(
         .param .u64 x_ptr_param,
         .param .u64 w1_bfly_ptr_param,
@@ -225,8 +222,8 @@
 
     .reg .u64 out_offset_64;
     cvt.u64.u32 out_offset_64, out_offset;
-
-    add.u64 out_ptr_reg, out_ptr_reg, out_offset_64;
+    .reg .u64 out_ptr_matrix_store;
+    add.u64 out_ptr_matrix_store, out_ptr_reg, out_offset_64;
 
     // out_small_0 is two values of c_indices[:8,:warp_id*8],
     // out_small_1 is two values of c_indices[8:16,:warp_id*8]
@@ -234,10 +231,19 @@
     // out_small_3 is two values of c_indices[8:16,warp_id*8:warp_id*8+8]
 
     // TODO: permute back here!
-    st.global.b32 [out_ptr_reg + 0], out_small_0;
-    st.global.b32 [out_ptr_reg + 2048], out_small_1;
-    st.global.b32 [out_ptr_reg + 16], out_small_2;
-    st.global.b32 [out_ptr_reg + 2064], out_small_3;
+    st.global.b32 [out_ptr_matrix_store + 0], out_small_0;
+    st.global.b32 [out_ptr_matrix_store + 2048], out_small_1;
+    st.global.b32 [out_ptr_matrix_store + 16], out_small_2;
+    st.global.b32 [out_ptr_matrix_store + 2064], out_small_3;
+
+    /*
+    .reg .u64 x_global_ptr;
+    add.u64 x_global_ptr, out_ptr_reg, x_ldmatrix_offset_64;
+    st.global.b32 [x_global_ptr + 0], x_0;
+    st.global.b32 [x_global_ptr + 4], x_1;
+    st.global.b32 [x_global_ptr + 8], x_2;
+    st.global.b32 [x_global_ptr + 12], x_3;
+    */
 
     /*
     ldmatrix.sync.aligned.m8n8.x4.shared.b16 {x_0, x_1, x_2, x_3}, [x_ldmatrix_ptr + 0];
