@@ -16,7 +16,7 @@ if result.returncode != 0:
 print("completed compiling")
 
 print("about to compile")
-siso = load(name="siso", sources=["siso.cpp", "siso.cu"])
+siso = load(name="siso", sources=["siso.cpp", "siso.cu"], extra_ldflags=["-lcuda"])
 print("compiled")
 
 @torch.jit.script
@@ -68,7 +68,7 @@ def triton_ssm_batched(sequence, A, B, C, BATCH_SIZE, N_HEADS, STATE_SIZE, SEQUE
 @triton.testing.perf_report(triton.testing.Benchmark(
         x_names=['SEQUENCE_LENGTH'],  # argument names to use as an x-axis for the plot
         x_vals=[
-            2**i for i in range(4, 14)
+            2**i for i in range(4, 15)
         ],  # different possible values for `x_name`
         x_log=True,  # x axis is logarithmic
         y_log=True,
@@ -77,7 +77,7 @@ def triton_ssm_batched(sequence, A, B, C, BATCH_SIZE, N_HEADS, STATE_SIZE, SEQUE
         line_names=['ptx'],  # label name for the lines
         styles=[('red', 'solid'), ("blue", "solid"),],  # line styles
         ylabel='elem/s',  # label name for the y-axis
-        plot_name=f'ssm-performance @ N=64, N_HEADS=131072',  # name for the plot. Used also as a file name for saving the plot.
+        plot_name=f'ssm-performance @ N=32, N_HEADS=131072',  # name for the plot. Used also as a file name for saving the plot.
         args={"N_HEADS": 131072, "STATE_SIZE": 32},  # values for function arguments not in `x_names` and `y_name`
     ))
 def benchmark_unbatched(SEQUENCE_LENGTH, provider, STATE_SIZE, N_HEADS):
@@ -93,12 +93,17 @@ def benchmark_unbatched(SEQUENCE_LENGTH, provider, STATE_SIZE, N_HEADS):
     else:
         raise ValueError("got unknown provider", provider)
     elems = lambda ms: SEQUENCE_LENGTH * N_HEADS * 1000/(ms)
+    print(f"{SEQUENCE_LENGTH} {ms}")
     return elems(ms), elems(max_ms), elems(min_ms)
 
+if len(sys.argv) > 1 and sys.argv[1] == "benchmark":
+    benchmark_unbatched.run(print_data=True)
+    sys.exit(0)
+
 print("Got to running first test")
-N_HEADS = 16
+N_HEADS = 131072
 STATE_SIZE = 32
-SEQUENCE_LENGTH = 16
+SEQUENCE_LENGTH = 8192
 A = torch.randn((N_HEADS, STATE_SIZE), dtype=torch.float32, device="cuda")/4
 print("Created A")
 B = torch.randn((N_HEADS, STATE_SIZE), dtype=torch.float32, device="cuda")/4
@@ -115,7 +120,3 @@ torch_output = torch_diag(sequence, A, B, C, N_HEADS, STATE_SIZE, SEQUENCE_LENGT
 print("torch sum output is", torch_output.to(dtype=torch.float64).abs().sum(), f"nan: {bool(torch_output.isnan().any())}")
 '''
 # breakpoint()
-
-if len(sys.argv) > 1 and sys.argv[1] == "benchmark":
-    benchmark_unbatched.run(print_data=True)
-    sys.exit(0)

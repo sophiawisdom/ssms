@@ -50,10 +50,11 @@ torch::Tensor siso_cuda_forward(
     unsigned int sequence_length
 ) {
 
+  int start = clock();
   const auto num_heads = a.size(0); // {N_HEADS, STATE_SIZE}
   assert(a.size(1) == 32); // STATE_SIZE must be 32 at the moment.
 
-  auto output = torch::zeros_like(u);
+  auto output = torch::empty_like(u);
 
   assert(num_heads % 4 == 0);
 
@@ -91,6 +92,8 @@ torch::Tensor siso_cuda_forward(
 #ifdef DEBUG
   printf("about to cuLaunchKernel, sequence_length is %d\n", sequence_length);
 #endif
+  int end = clock();
+  // printf("Took %d us to get to cuLaunchKernel\n", end-start);
   // printf("launching with %d grid\n", num_heads/8);
   int error = cuLaunchKernel(siso_forward,
   num_heads/8, 1, 1, // grid x, y, z
