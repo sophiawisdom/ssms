@@ -85,18 +85,21 @@
     // This is the same for every warp. As we go down and compute subsequent parts of X, we now load a[:,16:32], a[:,32:48] etc.
     // which is just a pointer increment from a[,0:16].
 
-    // ((np.arange(32) & 8) << 1)
+    // (np.arange(32) & 8) << 1
     .reg .u32 eight_part;
     and.b32 eight_part, tid_x, 8;
     shl.b32 eight_part, eight_part, 1;
 
+    // np.arange(32) & 23
     .reg .u32 twenty_three_part;
     and.b32 twenty_three_part, tid_x, 23;
-
+    
+    // (np.arange(32) & 16) >> 1
     .reg .u32 sixteen_part;
     and.b32 sixteen_part, tid_x, 16;
     shr.b32 sixteen_part, sixteen_part, 1;
 
+    // (((np.arange(32) & 23) - ((np.arange(32) & 16) >> 1)) << 8)
     .reg .u32 sixteen_twenty_three_part;
     sub.u32 sixteen_twenty_three_part, twenty_three_part, sixteen_part;
     shl.b32 sixteen_twenty_three_part, sixteen_twenty_three_part, 8;
@@ -143,7 +146,7 @@
 
     bar.sync 0;
 
-    cp.async.wait_all; // TODO: structure the cp async so we don't have to do this
+    cp.async.wait_group 0; // TODO: structure the cp async so we don't have to do this
 
     bar.sync 1;
 

@@ -66,16 +66,14 @@ static void initialize_cuda() {
 
 torch::Tensor monarch_cuda_forward(
     torch::Tensor x,
-    torch::Tensor w1_bfly,
-    torch::Tensor out
+    torch::Tensor w1_bfly
 ) {
-  // auto output = torch::zeros_like(x);
+  auto output = torch::zeros_like(x);
 
   unsigned int root_n = w1_bfly.sizes()[0];
 
-  monarch_impl<<<256, root_n>>>((__nv_bfloat16 *)x.data_ptr(), (__nv_bfloat16 *) w1_bfly.data_ptr(), (float *) out.data_ptr());
-  return out;
-  /*
+  // monarch_impl<<<256, root_n>>>((__nv_bfloat16 *)x.data_ptr(), (__nv_bfloat16 *) w1_bfly.data_ptr(), (float *) out.data_ptr());
+  // return out;
 
   void * argBuffer[3];
   int argBufferSize = sizeof(argBuffer);
@@ -83,7 +81,7 @@ torch::Tensor monarch_cuda_forward(
   argBuffer[1] = w1_bfly.data_ptr();
   argBuffer[2] = output.data_ptr();
 
-  printf("argBufferSize %d\n", argBufferSize);
+  // printf("argBufferSize %d\n", argBufferSize);
 
   for (int i = 0; i < sizeof(argBuffer)/sizeof(void *) + 1; i++) {
 #ifdef DEBUG
@@ -99,10 +97,12 @@ torch::Tensor monarch_cuda_forward(
 #ifdef DEBUG
   printf("about to cuLaunchKernel, sequence_length is %d\n", sequence_length);
 #endif
-  printf("launching with %d grid\n", root_n);
+  // printf("launching with %d grid\n", root_n);
   int error = cuLaunchKernel(kernel_function,
-  root_n, 1, 1, // grid x, y, z
-  32, 8, 1, // block x, y, z
+  // root_n, 1, 1, // grid x, y, z
+  1, 1, 1,
+  // 32, 8, 1, // block x, y, z
+  32, 8, 1,
   0, 0, NULL, config);
   if (error != CUDA_SUCCESS) {
     cudaError_t lastErr = cudaGetLastError();
@@ -115,5 +115,4 @@ torch::Tensor monarch_cuda_forward(
 #endif
 
   return output;
-  */
 }

@@ -1,0 +1,15 @@
+.version 7.4
+.target sm_80
+.address_size 64
+
+.visible .entry siso_backward(
+        .param .u64 u_ptr_param,
+        .param .u64 a_ptr_param,
+        .param .u64 b_ptr_param,
+        .param .u64 c_ptr_param,
+        .param .u64 output_ptr_param,
+        .param .u32 sequence_length_param // BE CAREFUL, THIS IS U32
+)
+.maxntid 4, 8, 1
+{
+}

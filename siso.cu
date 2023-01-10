@@ -8,7 +8,7 @@
 #include <vector>
 
 CUmodule ptx_module;
-CUfunction kernel_function;
+CUfunction siso_forward;
 CUdevice   device;
 CUcontext  context;
 int major = 0, minor = 0;
@@ -32,7 +32,7 @@ static void initialize_cuda() {
         exit(-1);
     }
 
-    err = cuModuleGetFunction(&kernel_function, ptx_module, "siso_kernel");
+    err = cuModuleGetFunction(&siso_forward, ptx_module, "siso_forward_32");
     if (err != CUDA_SUCCESS) {
         fprintf(stderr, "Failed to get function\n");
     }
@@ -51,6 +51,7 @@ torch::Tensor siso_cuda_forward(
 ) {
 
   const auto num_heads = a.size(0); // {N_HEADS, STATE_SIZE}
+  assert(a.size(1) == 32); // STATE_SIZE must be 32 at the moment.
 
   auto output = torch::zeros_like(u);
 
@@ -90,8 +91,8 @@ torch::Tensor siso_cuda_forward(
 #ifdef DEBUG
   printf("about to cuLaunchKernel, sequence_length is %d\n", sequence_length);
 #endif
-  printf("launching with %d grid\n", num_heads/8);
-  int error = cuLaunchKernel(kernel_function,
+  // printf("launching with %d grid\n", num_heads/8);
+  int error = cuLaunchKernel(siso_forward,
   num_heads/8, 1, 1, // grid x, y, z
   4, 8, 1, // block x, y, z
   0, 0, NULL, config);
