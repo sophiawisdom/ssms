@@ -9,6 +9,7 @@
 
 CUmodule ptx_module;
 CUfunction siso_forward;
+CUfunction siso_backward;
 CUdevice   device;
 CUcontext  context;
 int major = 0, minor = 0;
@@ -34,7 +35,12 @@ static void initialize_cuda() {
 
     err = cuModuleGetFunction(&siso_forward, ptx_module, "siso_forward_32");
     if (err != CUDA_SUCCESS) {
-        fprintf(stderr, "Failed to get function\n");
+        fprintf(stderr, "Failed to get forward function\n");
+    }
+
+    err = cuModuleGetFunction(&siso_backward, ptx_module, "siso_backward_32");
+    if (err != CUDA_SUCCESS) {
+        fprintf(stderr, "Failed to get backward function\n");
     }
 
     printf("SISO initialized!\n");
@@ -49,14 +55,17 @@ torch::Tensor siso_cuda_forward(
     torch::Tensor c,
     unsigned int sequence_length
 ) {
-
+#ifdef DEBUG
   int start = clock();
+#endif
+
   const auto num_heads = a.size(0); // {N_HEADS, STATE_SIZE}
   assert(a.size(1) == 32); // STATE_SIZE must be 32 at the moment.
+  assert(sequence_length % 4 == 0); // sequence length must be divisible by 4
 
   auto output = torch::empty_like(u);
 
-  assert(num_heads % 4 == 0);
+  assert(num_heads % 8 == 0);
 
   // printf("a sizes 0 is %d\n", a.sizes()[0]);
   unsigned int n_heads = a.sizes()[0];
@@ -71,30 +80,28 @@ torch::Tensor siso_cuda_forward(
   int *argBufferView = (int *)&argBuffer;
   argBufferView[10] = sequence_length;
 
-  if (old_sequence_length != sequence_length) {
 #ifdef DEBUG
+  if (old_sequence_length != sequence_length) {
     printf("sequence_length %u\n", sequence_length);
-#endif
     old_sequence_length = sequence_length;
   }
 
   for (int i = 0; i < sizeof(argBuffer)/sizeof(void *) + 1; i++) {
-#ifdef DEBUG
     printf("argBuffer for #%d is %p\n", i, argBuffer[i]);
-#endif
   }
+
+  printf("about to cuLaunchKernel, sequence_length is %d\n", sequence_length);
+  int end = clock();
+  printf("Took %d us to get to cuLaunchKernel\n", end-start);
+  printf("launching with %d grid\n", num_heads/8);
+#endif
 
   void *config[] = {
     CU_LAUNCH_PARAM_BUFFER_POINTER, argBufferView,
     CU_LAUNCH_PARAM_BUFFER_SIZE,    &argBufferSize,
     CU_LAUNCH_PARAM_END,
   };
-#ifdef DEBUG
-  printf("about to cuLaunchKernel, sequence_length is %d\n", sequence_length);
-#endif
-  int end = clock();
-  // printf("Took %d us to get to cuLaunchKernel\n", end-start);
-  // printf("launching with %d grid\n", num_heads/8);
+
   int error = cuLaunchKernel(siso_forward,
   num_heads/8, 1, 1, // grid x, y, z
   4, 8, 1, // block x, y, z
@@ -110,4 +117,17 @@ torch::Tensor siso_cuda_forward(
 #endif
 
   return output;
+}
+
+void siso_cuda_backward(
+    torch::Tensor gradients,
+    torch::Tensor u,
+    torch::Tensor a,
+    torch::Tensor grad_a,
+    torch::Tensor b,
+    torch::Tensor grad_b,
+    torch::Tensor c,
+    torch::Tensor grad_c,
+    unsigned int sequence_length) {
+      return;
 }

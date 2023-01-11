@@ -101,22 +101,29 @@ if len(sys.argv) > 1 and sys.argv[1] == "benchmark":
     sys.exit(0)
 
 print("Got to running first test")
-N_HEADS = 131072
+N_HEADS = 256
 STATE_SIZE = 32
 SEQUENCE_LENGTH = 8192
-A = torch.randn((N_HEADS, STATE_SIZE), dtype=torch.float32, device="cuda")/4
+A = torch.randn((N_HEADS, STATE_SIZE), dtype=torch.float32, device="cuda")/2
+# A = torch.empty((N_HEADS, STATE_SIZE), dtype=torch.float32, device="cuda")
 print("Created A")
-B = torch.randn((N_HEADS, STATE_SIZE), dtype=torch.float32, device="cuda")/4
+B = torch.randn((N_HEADS, STATE_SIZE), dtype=torch.float32, device="cuda")/2
+# B = torch.empty((N_HEADS, STATE_SIZE), dtype=torch.float32, device="cuda")
 print("Created B")
-C = torch.randn((N_HEADS, STATE_SIZE), dtype=torch.float32, device="cuda")/4
-print("Created A,B,C")
-sequence = torch.ones((N_HEADS, SEQUENCE_LENGTH), dtype=torch.float32, device="cuda")
+C = torch.randn((N_HEADS, STATE_SIZE), dtype=torch.float32, device="cuda")/2
+# C = torch.empty((N_HEADS, STATE_SIZE), dtype=torch.float32, device="cuda")
+print("Created A,B,C", A.abs().sum(), B.abs().sum(), C.abs().sum())
+# sequence = torch.ones((N_HEADS, SEQUENCE_LENGTH), dtype=torch.float32, device="cuda")
+sequence = torch.empty((N_HEADS, SEQUENCE_LENGTH), dtype=torch.float32, device="cuda")
 print("Created sequence")
 output = siso.forward(sequence, A, B, C, SEQUENCE_LENGTH)
 print("PTX sum output is", output.to(dtype=torch.float64).abs().sum(), f"nan: {bool(output.isnan().any())}")
 
-'''
+print("A,B,C", A.abs().sum(), B.abs().sum(), C.abs().sum())
+
 torch_output = torch_diag(sequence, A, B, C, N_HEADS, STATE_SIZE, SEQUENCE_LENGTH)
 print("torch sum output is", torch_output.to(dtype=torch.float64).abs().sum(), f"nan: {bool(torch_output.isnan().any())}")
-'''
+
+print(f"{torch.allclose(output, torch_output)=}")
+
 # breakpoint()

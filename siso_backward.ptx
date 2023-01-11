@@ -2,14 +2,271 @@
 .target sm_80
 .address_size 64
 
-.visible .entry siso_backward(
+.visible .entry siso_backward_32(
+        .param .u64 gradients_ptr_param,
         .param .u64 u_ptr_param,
         .param .u64 a_ptr_param,
+        .param .u64 grad_a_ptr_param,
         .param .u64 b_ptr_param,
+        .param .u64 grad_b_ptr_param,
         .param .u64 c_ptr_param,
-        .param .u64 output_ptr_param,
-        .param .u32 sequence_length_param // BE CAREFUL, THIS IS U32
+        .param .u64 grad_c_ptr_param,
+        .param .u32 sequence_length_param
 )
 .maxntid 4, 8, 1
 {
+        .reg .pred should_loop;
+
+        .reg .b64 u_ptr;
+        ld.param.u64 u_ptr, [u_ptr_param];
+        // params are all {N_HEADS, STATE_SIZE}
+        .reg .b64 a_ptr;
+        ld.param.u64 a_ptr, [a_ptr_param];
+        .reg .b64 b_ptr;
+        ld.param.u64 b_ptr, [b_ptr_param];
+        .reg .b64 c_ptr;
+        ld.param.u64 c_ptr, [c_ptr_param];
+        .reg .b64 output_ptr;
+        ld.param.u64 output_ptr, [output_ptr_param];
+        .reg .u32 sequence_length;
+        ld.param.u32 sequence_length, [sequence_length_param];
+
+        // run with block dims ({x, y, z}) {N_HEADS//4, 1, 1} thread dims {8, N_HEADS//4, 1]
+        .reg .u32 head_idx;
+        .reg .u32 ctaid;
+        mov.u32 ctaid, %ctaid.x;
+        mul.lo.u32 head_idx, ctaid, 8;
+        .reg .u32 thread_id_y;
+        mov.u32 thread_id_y, %tid.y;
+        add.u32 head_idx, head_idx, thread_id_y;
+        .reg .b32 thread_in_head;
+        mov.u32 thread_in_head, %tid.x;
+
+        .reg .u64 thread_in_head_times_32;
+        mul.wide.u32 thread_in_head_times_32, thread_in_head, 32;
+
+        .reg .u64 parameters_offset;
+        mul.wide.u32 parameters_offset, head_idx, 128;
+        add.u64 parameters_offset, parameters_offset, thread_in_head_times_32;
+
+        .reg .f32 a_<8>;
+        .reg .f32 b_<8>;
+        .reg .f32 c_<8>;
+
+        .reg .u64 our_a_ptr;
+        add.u64 our_a_ptr, a_ptr, parameters_offset;
+        ld.global.v4.f32 {a_0, a_1, a_2, a_3}, [our_a_ptr];
+        ld.global.v4.f32 {a_4, a_5, a_6, a_7}, [our_a_ptr + 16];
+
+        .reg .u64 our_b_ptr;
+        add.u64 our_b_ptr, b_ptr, parameters_offset;
+        ld.global.v4.f32 {b_0, b_1, b_2, b_3}, [our_b_ptr];
+        ld.global.v4.f32 {b_4, b_5, b_6, b_7}, [our_b_ptr + 16];
+
+        .reg .u64 our_c_ptr;
+        add.u64 our_c_ptr, c_ptr, parameters_offset;
+        ld.global.v4.f32 {c_0, c_1, c_2, c_3}, [our_c_ptr];
+        ld.global.v4.f32 {c_4, c_5, c_6, c_7}, [our_c_ptr + 16];
+
+        .reg .f32 x_<8>;
+        mov.f32 x_0, 0f00000000;
+        mov.f32 x_1, 0f00000000;
+        mov.f32 x_2, 0f00000000;
+        mov.f32 x_3, 0f00000000;
+        mov.f32 x_4, 0f00000000;
+        mov.f32 x_5, 0f00000000;
+        mov.f32 x_6, 0f00000000;
+        mov.f32 x_7, 0f00000000;
+
+        .reg .u64 head_idx_times_sequence_length;
+        mul.wide.u32 head_idx_times_sequence_length, head_idx, sequence_length; // input and output are {N_HEADS, SEQUENCE_LENGTH}
+        mul.lo.u64 head_idx_times_sequence_length, head_idx_times_sequence_length, 4; // 4 bytes
+
+        // sequence is {N_HEADS, SEQUENCE_LENGTH}
+        .reg .u64 our_u_ptr;
+        add.u64 our_u_ptr, u_ptr, head_idx_times_sequence_length;
+
+        .reg .u64 our_out_ptr;
+        add.u64 our_out_ptr, output_ptr, head_idx_times_sequence_length;
+
+        // Several values for u instead of just one so we can do one big vectorized load instead of four smaller loads.
+        .reg .f32 u_k;
+        .reg .f32 u_k_2;
+        .reg .f32 u_k_3;
+        .reg .f32 u_k_4;
+
+        // these are used for shuffles. val_0 is the first output, then val_1 is the first shuffle, then val_2 is the second
+        // shuffle. If we care about register pressure it's plausible to reuse some of the u_k or out_ values instead of this.
+        .reg .f32 val_0;
+        .reg .f32 val_1;
+        .reg .f32 val_2;
+
+        // Performance analysis has shown that we were limited by
+        // the *number* of memory requests, so we keep around several past outs to write them in one
+        // big store.
+        .reg .f32 out_1;
+        .reg .f32 out_2;
+        .reg .f32 out_3;
+
+LOOP:
+        ld.global.v4.f32 {u_k, u_k_2, u_k_3, u_k_4}, [our_u_ptr];
+        // prefetch.L1 [our_u_ptr+16];
+
+        // First A * X
+        mul.ftz.f32 x_0, x_0, a_0;
+        mul.ftz.f32 x_1, x_1, a_1;
+        mul.ftz.f32 x_2, x_2, a_2;
+        mul.ftz.f32 x_3, x_3, a_3;
+        mul.ftz.f32 x_4, x_4, a_4;
+        mul.ftz.f32 x_5, x_5, a_5;
+        mul.ftz.f32 x_6, x_6, a_6;
+        mul.ftz.f32 x_7, x_7, a_7;
+
+        // First X += B*u
+        fma.rz.ftz.f32 x_0, u_k, b_0, x_0;
+        fma.rz.ftz.f32 x_1, u_k, b_1, x_1;
+        fma.rz.ftz.f32 x_2, u_k, b_2, x_2;
+        fma.rz.ftz.f32 x_3, u_k, b_3, x_3;
+        fma.rz.ftz.f32 x_4, u_k, b_4, x_4;
+        fma.rz.ftz.f32 x_5, u_k, b_5, x_5;
+        fma.rz.ftz.f32 x_6, u_k, b_6, x_6;
+        fma.rz.ftz.f32 x_7, u_k, b_7, x_7;
+
+        // First sum(X*C)
+        mul.ftz.f32 val_0, x_0, c_0;
+        fma.rz.ftz.f32 val_0, x_1, c_1, val_0;
+        fma.rz.ftz.f32 val_0, x_2, c_2, val_0;
+        fma.rz.ftz.f32 val_0, x_3, c_3, val_0;
+        fma.rz.ftz.f32 val_0, x_4, c_4, val_0;
+        fma.rz.ftz.f32 val_0, x_5, c_5, val_0;
+        fma.rz.ftz.f32 val_0, x_6, c_6, val_0;
+        fma.rz.ftz.f32 val_0, x_7, c_7, val_0;
+
+        shfl.sync.bfly.b32 val_1, val_0, 2, 0x1f, 0xffffffff; // First state, First shuffle
+
+        // Second A * X
+        mul.ftz.f32 x_0, x_0, a_0;
+        mul.ftz.f32 x_1, x_1, a_1;
+        mul.ftz.f32 x_2, x_2, a_2;
+        mul.ftz.f32 x_3, x_3, a_3;
+        mul.ftz.f32 x_4, x_4, a_4;
+        mul.ftz.f32 x_5, x_5, a_5;
+        mul.ftz.f32 x_6, x_6, a_6;
+        add.rz.ftz.f32 val_2, val_1, val_0; // First state, Second shuffle
+        mul.ftz.f32 x_7, x_7, a_7;
+
+        // First state, Second shuffle
+        shfl.sync.bfly.b32 val_1, val_2, 1, 0x1f, 0xffffffff;
+
+        // Second X += B*u
+        fma.rz.ftz.f32 x_0, u_k_2, b_0, x_0;
+        fma.rz.ftz.f32 x_1, u_k_2, b_1, x_1;
+        fma.rz.ftz.f32 x_2, u_k_2, b_2, x_2;
+        fma.rz.ftz.f32 x_3, u_k_2, b_3, x_3;
+        fma.rz.ftz.f32 x_4, u_k_2, b_4, x_4;
+        fma.rz.ftz.f32 x_5, u_k_2, b_5, x_5;
+        fma.rz.ftz.f32 x_6, u_k_2, b_6, x_6;
+        fma.rz.ftz.f32 x_7, u_k_2, b_7, x_7;
+
+        // First final out value
+        add.rz.ftz.f32 out_1, val_1, val_2;
+
+        // Second sum(X*C)
+        mul.ftz.f32 val_0, x_0, c_0;
+        fma.rz.ftz.f32 val_0, x_1, c_1, val_0;
+        fma.rz.ftz.f32 val_0, x_2, c_2, val_0;
+        fma.rz.ftz.f32 val_0, x_3, c_3, val_0;
+        fma.rz.ftz.f32 val_0, x_4, c_4, val_0;
+        fma.rz.ftz.f32 val_0, x_5, c_5, val_0;
+        fma.rz.ftz.f32 val_0, x_6, c_6, val_0;
+        fma.rz.ftz.f32 val_0, x_7, c_7, val_0;
+
+        shfl.sync.bfly.b32 val_1, val_0, 2, 0x1f, 0xffffffff; // Second state, first shuffle
+
+        // Third A * X
+        mul.ftz.f32 x_0, x_0, a_0;
+        mul.ftz.f32 x_1, x_1, a_1;
+        mul.ftz.f32 x_2, x_2, a_2;
+        mul.ftz.f32 x_3, x_3, a_3;
+        mul.ftz.f32 x_4, x_4, a_4;
+        mul.ftz.f32 x_5, x_5, a_5;
+        mul.ftz.f32 x_6, x_6, a_6;
+        add.rz.ftz.f32 val_2, val_1, val_0; // Second state, Second shuffle
+        mul.ftz.f32 x_7, x_7, a_7;
+
+        shfl.sync.bfly.b32 val_1, val_2, 1, 0x1f, 0xffffffff; // Second state, Second shuffle
+
+        // Third X += B*u
+        fma.rz.ftz.f32 x_0, u_k_3, b_0, x_0;
+        fma.rz.ftz.f32 x_1, u_k_3, b_1, x_1;
+        fma.rz.ftz.f32 x_2, u_k_3, b_2, x_2;
+        fma.rz.ftz.f32 x_3, u_k_3, b_3, x_3;
+        fma.rz.ftz.f32 x_4, u_k_3, b_4, x_4;
+        fma.rz.ftz.f32 x_5, u_k_3, b_5, x_5;
+        fma.rz.ftz.f32 x_6, u_k_3, b_6, x_6;
+        fma.rz.ftz.f32 x_7, u_k_3, b_7, x_7;
+
+        add.rz.ftz.f32 out_2, val_1, val_2; // Second sum(X*C)
+
+        // Third sum(X*C)
+        mul.ftz.f32 val_0, x_0, c_0;
+        fma.rz.ftz.f32 val_0, x_1, c_1, val_0;
+        fma.rz.ftz.f32 val_0, x_2, c_2, val_0;
+        fma.rz.ftz.f32 val_0, x_3, c_3, val_0;
+        fma.rz.ftz.f32 val_0, x_4, c_4, val_0;
+        fma.rz.ftz.f32 val_0, x_5, c_5, val_0;
+        fma.rz.ftz.f32 val_0, x_6, c_6, val_0;
+        fma.rz.ftz.f32 val_0, x_7, c_7, val_0;
+
+        shfl.sync.bfly.b32 val_1, val_0, 2, 0x1f, 0xffffffff; // Third state, First Shuffle
+        
+        // Fourth A * X
+        mul.ftz.f32 x_0, x_0, a_0;
+        mul.ftz.f32 x_1, x_1, a_1;
+        mul.ftz.f32 x_2, x_2, a_2;
+        mul.ftz.f32 x_3, x_3, a_3;
+        mul.ftz.f32 x_4, x_4, a_4;
+        mul.ftz.f32 x_5, x_5, a_5;
+        mul.ftz.f32 x_6, x_6, a_6;
+        add.rz.ftz.f32 val_2, val_1, val_0; // Third state, Second shuffle
+        mul.ftz.f32 x_7, x_7, a_7;
+
+        shfl.sync.bfly.b32 val_1, val_2, 1, 0x1f, 0xffffffff; // Third state, Second shuffle
+
+        // Fourth X += B*u
+        fma.rz.ftz.f32 x_0, u_k_4, b_0, x_0;
+        fma.rz.ftz.f32 x_1, u_k_4, b_1, x_1;
+        fma.rz.ftz.f32 x_2, u_k_4, b_2, x_2;
+        fma.rz.ftz.f32 x_3, u_k_4, b_3, x_3;
+        fma.rz.ftz.f32 x_4, u_k_4, b_4, x_4;
+        fma.rz.ftz.f32 x_5, u_k_4, b_5, x_5;
+        fma.rz.ftz.f32 x_6, u_k_4, b_6, x_6;
+        fma.rz.ftz.f32 x_7, u_k_4, b_7, x_7;
+
+        add.rz.ftz.f32 out_3, val_1, val_2; // third sum(X*C)
+
+        // Fourth sum(X*C)
+        mul.ftz.f32 val_0, x_0, c_0;
+        fma.rz.ftz.f32 val_0, x_1, c_1, val_0;
+        fma.rz.ftz.f32 val_0, x_2, c_2, val_0;
+        fma.rz.ftz.f32 val_0, x_3, c_3, val_0;
+        fma.rz.ftz.f32 val_0, x_4, c_4, val_0;
+        fma.rz.ftz.f32 val_0, x_5, c_5, val_0;
+        fma.rz.ftz.f32 val_0, x_6, c_6, val_0;
+        fma.rz.ftz.f32 val_0, x_7, c_7, val_0;
+
+        shfl.sync.bfly.b32 val_1, val_0, 2, 0x1f, 0xffffffff;
+        add.rz.ftz.f32 val_2, val_1, val_0;
+        shfl.sync.bfly.b32 val_1, val_2, 1, 0x1f, 0xffffffff;
+        add.rz.ftz.f32 val_0, val_1, val_2;
+
+        // write out all outs
+        st.cs.global.v4.f32 [our_out_ptr], {out_1, out_2, out_3, val_0};
+
+        add.u64 our_out_ptr, our_out_ptr, 16;
+        add.u64 our_u_ptr, our_u_ptr, 16;
+        sub.u32 sequence_length, sequence_length, 4;
+        setp.gt.u32     should_loop, sequence_length, 0;
+        @should_loop bra LOOP;
+        ret;
 }

@@ -90,24 +90,30 @@
         .reg .u64 our_out_ptr;
         add.u64 our_out_ptr, output_ptr, head_idx_times_sequence_length;
 
+        // Several values for u instead of just one so we can do one big vectorized load instead of four smaller loads.
         .reg .f32 u_k;
         .reg .f32 u_k_2;
         .reg .f32 u_k_3;
         .reg .f32 u_k_4;
+
+        // these are used for shuffles. val_0 is the first output, then val_1 is the first shuffle, then val_2 is the second
+        // shuffle. If we care about register pressure it's plausible to reuse some of the u_k or out_ values instead of this.
         .reg .f32 val_0;
         .reg .f32 val_1;
         .reg .f32 val_2;
 
+        // Performance analysis has shown that we were limited by
+        // the *number* of memory requests, so we keep around several past outs to write them in one
+        // big store.
         .reg .f32 out_1;
         .reg .f32 out_2;
         .reg .f32 out_3;
 
-        .reg .u32 idx;
-        mov.u32 idx, 0;
 LOOP:
         ld.global.v4.f32 {u_k, u_k_2, u_k_3, u_k_4}, [our_u_ptr];
+        // prefetch.L1 [our_u_ptr+16];
 
-        // A * X
+        // First A * X
         mul.ftz.f32 x_0, x_0, a_0;
         mul.ftz.f32 x_1, x_1, a_1;
         mul.ftz.f32 x_2, x_2, a_2;
@@ -117,7 +123,7 @@ LOOP:
         mul.ftz.f32 x_6, x_6, a_6;
         mul.ftz.f32 x_7, x_7, a_7;
 
-        // X += B*u
+        // First X += B*u
         fma.rz.ftz.f32 x_0, u_k, b_0, x_0;
         fma.rz.ftz.f32 x_1, u_k, b_1, x_1;
         fma.rz.ftz.f32 x_2, u_k, b_2, x_2;
@@ -127,7 +133,7 @@ LOOP:
         fma.rz.ftz.f32 x_6, u_k, b_6, x_6;
         fma.rz.ftz.f32 x_7, u_k, b_7, x_7;
 
-        // sum(X*C)
+        // First sum(X*C)
         mul.ftz.f32 val_0, x_0, c_0;
         fma.rz.ftz.f32 val_0, x_1, c_1, val_0;
         fma.rz.ftz.f32 val_0, x_2, c_2, val_0;
@@ -137,9 +143,9 @@ LOOP:
         fma.rz.ftz.f32 val_0, x_6, c_6, val_0;
         fma.rz.ftz.f32 val_0, x_7, c_7, val_0;
 
-        shfl.sync.bfly.b32 val_1, val_0, 2, 0x1f, 0xffffffff;
+        shfl.sync.bfly.b32 val_1, val_0, 2, 0x1f, 0xffffffff; // First state, First shuffle
 
-        // A * X
+        // Second A * X
         mul.ftz.f32 x_0, x_0, a_0;
         mul.ftz.f32 x_1, x_1, a_1;
         mul.ftz.f32 x_2, x_2, a_2;
@@ -147,12 +153,13 @@ LOOP:
         mul.ftz.f32 x_4, x_4, a_4;
         mul.ftz.f32 x_5, x_5, a_5;
         mul.ftz.f32 x_6, x_6, a_6;
+        add.rz.ftz.f32 val_2, val_1, val_0; // First state, Second shuffle
         mul.ftz.f32 x_7, x_7, a_7;
 
-        add.rz.ftz.f32 val_2, val_1, val_0;
+        // First state, Second shuffle
         shfl.sync.bfly.b32 val_1, val_2, 1, 0x1f, 0xffffffff;
 
-        // X += B*u
+        // Second X += B*u
         fma.rz.ftz.f32 x_0, u_k_2, b_0, x_0;
         fma.rz.ftz.f32 x_1, u_k_2, b_1, x_1;
         fma.rz.ftz.f32 x_2, u_k_2, b_2, x_2;
@@ -162,10 +169,10 @@ LOOP:
         fma.rz.ftz.f32 x_6, u_k_2, b_6, x_6;
         fma.rz.ftz.f32 x_7, u_k_2, b_7, x_7;
 
-        // First sum(X*C)
+        // First final out value
         add.rz.ftz.f32 out_1, val_1, val_2;
 
-        // sum(X*C)
+        // Second sum(X*C)
         mul.ftz.f32 val_0, x_0, c_0;
         fma.rz.ftz.f32 val_0, x_1, c_1, val_0;
         fma.rz.ftz.f32 val_0, x_2, c_2, val_0;
@@ -175,9 +182,9 @@ LOOP:
         fma.rz.ftz.f32 val_0, x_6, c_6, val_0;
         fma.rz.ftz.f32 val_0, x_7, c_7, val_0;
 
-        shfl.sync.bfly.b32 val_1, val_0, 2, 0x1f, 0xffffffff;
+        shfl.sync.bfly.b32 val_1, val_0, 2, 0x1f, 0xffffffff; // Second state, first shuffle
 
-        // A * X
+        // Third A * X
         mul.ftz.f32 x_0, x_0, a_0;
         mul.ftz.f32 x_1, x_1, a_1;
         mul.ftz.f32 x_2, x_2, a_2;
@@ -185,12 +192,12 @@ LOOP:
         mul.ftz.f32 x_4, x_4, a_4;
         mul.ftz.f32 x_5, x_5, a_5;
         mul.ftz.f32 x_6, x_6, a_6;
+        add.rz.ftz.f32 val_2, val_1, val_0; // Second state, Second shuffle
         mul.ftz.f32 x_7, x_7, a_7;
 
-        add.rz.ftz.f32 val_2, val_1, val_0;
-        shfl.sync.bfly.b32 val_1, val_2, 1, 0x1f, 0xffffffff;
+        shfl.sync.bfly.b32 val_1, val_2, 1, 0x1f, 0xffffffff; // Second state, Second shuffle
 
-        // X += B*u
+        // Third X += B*u
         fma.rz.ftz.f32 x_0, u_k_3, b_0, x_0;
         fma.rz.ftz.f32 x_1, u_k_3, b_1, x_1;
         fma.rz.ftz.f32 x_2, u_k_3, b_2, x_2;
@@ -202,7 +209,7 @@ LOOP:
 
         add.rz.ftz.f32 out_2, val_1, val_2; // Second sum(X*C)
 
-        // sum(X*C)
+        // Third sum(X*C)
         mul.ftz.f32 val_0, x_0, c_0;
         fma.rz.ftz.f32 val_0, x_1, c_1, val_0;
         fma.rz.ftz.f32 val_0, x_2, c_2, val_0;
@@ -212,9 +219,9 @@ LOOP:
         fma.rz.ftz.f32 val_0, x_6, c_6, val_0;
         fma.rz.ftz.f32 val_0, x_7, c_7, val_0;
 
-        shfl.sync.bfly.b32 val_1, val_0, 2, 0x1f, 0xffffffff;
+        shfl.sync.bfly.b32 val_1, val_0, 2, 0x1f, 0xffffffff; // Third state, First Shuffle
         
-        // A * X
+        // Fourth A * X
         mul.ftz.f32 x_0, x_0, a_0;
         mul.ftz.f32 x_1, x_1, a_1;
         mul.ftz.f32 x_2, x_2, a_2;
@@ -222,12 +229,12 @@ LOOP:
         mul.ftz.f32 x_4, x_4, a_4;
         mul.ftz.f32 x_5, x_5, a_5;
         mul.ftz.f32 x_6, x_6, a_6;
+        add.rz.ftz.f32 val_2, val_1, val_0; // Third state, Second shuffle
         mul.ftz.f32 x_7, x_7, a_7;
 
-        add.rz.ftz.f32 val_2, val_1, val_0;
-        shfl.sync.bfly.b32 val_1, val_2, 1, 0x1f, 0xffffffff;
+        shfl.sync.bfly.b32 val_1, val_2, 1, 0x1f, 0xffffffff; // Third state, Second shuffle
 
-        // X += B*u
+        // Fourth X += B*u
         fma.rz.ftz.f32 x_0, u_k_4, b_0, x_0;
         fma.rz.ftz.f32 x_1, u_k_4, b_1, x_1;
         fma.rz.ftz.f32 x_2, u_k_4, b_2, x_2;
@@ -239,7 +246,7 @@ LOOP:
 
         add.rz.ftz.f32 out_3, val_1, val_2; // third sum(X*C)
 
-        // sum(X*C)
+        // Fourth sum(X*C)
         mul.ftz.f32 val_0, x_0, c_0;
         fma.rz.ftz.f32 val_0, x_1, c_1, val_0;
         fma.rz.ftz.f32 val_0, x_2, c_2, val_0;
@@ -254,11 +261,11 @@ LOOP:
         shfl.sync.bfly.b32 val_1, val_2, 1, 0x1f, 0xffffffff;
         add.rz.ftz.f32 val_0, val_1, val_2;
 
-        // write out sum(X*C)
-        st.global.v4.f32 [our_out_ptr], {out_1, out_2, out_3, val_0};
+        // write out all outs
+        st.cs.global.v4.f32 [our_out_ptr], {out_1, out_2, out_3, val_0};
 
-        // add.u64 our_out_ptr, our_out_ptr, 16;
-        // add.u64 our_u_ptr, our_u_ptr, 16;
+        add.u64 our_out_ptr, our_out_ptr, 16;
+        add.u64 our_u_ptr, our_u_ptr, 16;
         sub.u32 sequence_length, sequence_length, 4;
         setp.gt.u32     should_loop, sequence_length, 0;
         @should_loop bra LOOP;
