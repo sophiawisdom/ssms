@@ -31,18 +31,18 @@ def torch_diag(sequence, A_DIAG, B, C, N_HEADS: int, STATE_SIZE: int, SEQUENCE_L
 
 @triton.autotune(
     configs=[
-        triton.Config({},num_warps=1)
+        triton.Config({}, num_warps=1)
     ],
     key=[],
 )
 @triton.jit
-def ssm_kernel_batched_perhead_switched_loops(u_ptr, a_ptr, b_ptr, c_ptr, output_ptr, U_LENGTH: tl.constexpr, N: tl.constexpr, N_HEADS: tl.constexpr):
+def ssm_kernel_perhead(u_ptr, a_ptr, b_ptr, c_ptr, output_ptr, SEQUENCE_LENGTH: tl.constexpr, N: tl.constexpr, N_HEADS: tl.constexpr):
     i = tl.program_id(axis=0) # which head we're on
     A = tl.load(a_ptr + i * N + tl.arange(0, N))
     B = tl.load(b_ptr + i * N + tl.arange(0, N))
     C = tl.load(c_ptr + i * N + tl.arange(0, N))
     X = tl.zeros((N,), dtype=tl.float32)
-    for j in range(U_LENGTH):
+    for j in range(SEQUENCE_LENGTH):
         u_k = tl.load(u_ptr + (j * N_HEADS))
         X = X * A + B*u_k # X*A is N multiplies, B*u_k is N multiplies, adding is N adds
         output_idx = ((j * N_HEADS) + i)
@@ -50,11 +50,10 @@ def ssm_kernel_batched_perhead_switched_loops(u_ptr, a_ptr, b_ptr, c_ptr, output
         # all told 2N FMAs and N multiplies
 
 runs = 0
-def triton_ssm_batched(sequence, A, B, C, N_HEADS, STATE_SIZE, SEQUENCE_LENGTH):
+def triton_ssm(sequence, A, B, C, N_HEADS, STATE_SIZE, SEQUENCE_LENGTH):
     global runs
-    triton_outputs = torch.empty((SEQUENCE_LENGTH, N_HEADS), device=sequence.device, dtype=torch.float32)
-    # asm = ssm_kernel_batched_perhead_switched_loops[(N_HEADS,)](sequence, A, B, C, triton_outputs, SEQUENCE_LENGTH, STATE_SIZE, N_HEADS)
-    ssm_k[(1,)](torch.empty((1,), device="cuda", dtype=torch.bfloat16))
+    triton_outputs = torch.empty((SEQUENCE_LENGTH, N_HEADS), device=sequence.device, dtype=sequence.dtype)
+    asm = ssm_kernel_perhead[(N_HEADS,)](sequence, A, B, C, triton_outputs, SEQUENCE_LENGTH, STATE_SIZE, N_HEADS)
     if SEQUENCE_LENGTH == 8192:
         # runs += 1
         # print("runs", runs)
@@ -130,8 +129,8 @@ if len(sys.argv) > 1 and sys.argv[1] == "triton":
 
 # breakpoint()
 print("Created sequence")
-output = siso.forward(sequence, A, B, C, SEQUENCE_LENGTH)
-print("PTX sum output is", output.to(dtype=torch.float64).abs().sum(), f"nan: {bool(output.isnan().any())}")
+output = triton_ssm(sequence, A, B, C, N_HEADS, STATE_SIZE, SEQUENCE_LENGTH)
+print("triton sum output is", output.to(dtype=torch.float64).abs().sum(), f"nan: {bool(output.isnan().any())}")
 
 print("A,B,C", A.abs().sum(), B.abs().sum(), C.abs().sum())
 
