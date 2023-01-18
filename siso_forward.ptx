@@ -32,7 +32,7 @@
         .reg .u32 sequence_length;
         ld.param.u32 sequence_length, [sequence_length_param];
 
-        // run with block dims ({x, y, z}) {N_HEADS//4, 1, 1} thread dims {8, N_HEADS//4, 1]
+        // run with block dims ({x, y, z}) {N_HEADS//8, 1, 1} thread dims {4, 8, 1]
         .reg .u32 head_idx;
         .reg .u32 ctaid;
         mov.u32 ctaid, %ctaid.x;
@@ -44,10 +44,10 @@
         mov.u32 thread_in_head, %tid.x;
 
         .reg .u64 thread_in_head_times_32;
-        mul.wide.u32 thread_in_head_times_32, thread_in_head, 32;
+        mul.wide.u32 thread_in_head_times_32, thread_in_head, 32; // each thread grabs 8 parameters of size 4 bytes
 
         .reg .u64 parameters_offset;
-        mul.wide.u32 parameters_offset, head_idx, 128;
+        mul.wide.u32 parameters_offset, head_idx, 128; // each head has 32 parameters of size 4 bytes
         add.u64 parameters_offset, parameters_offset, thread_in_head_times_32;
 
         .reg .f32 a_<8>;

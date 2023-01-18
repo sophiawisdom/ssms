@@ -17,21 +17,29 @@
 {
         .reg .pred should_loop;
 
+        .reg .b64 gradients_ptr;
+        ld.param.u64 gradients_ptr, [gradients_ptr_param];
         .reg .b64 u_ptr;
         ld.param.u64 u_ptr, [u_ptr_param];
+
         // params are all {N_HEADS, STATE_SIZE}
         .reg .b64 a_ptr;
         ld.param.u64 a_ptr, [a_ptr_param];
+        .reg .b64 grad_a_ptr;
+        ld.param.u64 grad_a_ptr, [grad_a_ptr_param];
         .reg .b64 b_ptr;
         ld.param.u64 b_ptr, [b_ptr_param];
+        .reg .b64 grad_b_ptr;
+        ld.param.u64 grad_b_ptr, [grad_b_ptr_param];
         .reg .b64 c_ptr;
         ld.param.u64 c_ptr, [c_ptr_param];
-        .reg .b64 output_ptr;
-        ld.param.u64 output_ptr, [output_ptr_param];
+        .reg .b64 grad_c_ptr;
+        ld.param.u64 grad_c_ptr, [grad_c_ptr_param];
         .reg .u32 sequence_length;
         ld.param.u32 sequence_length, [sequence_length_param];
 
-        // run with block dims ({x, y, z}) {N_HEADS//4, 1, 1} thread dims {8, N_HEADS//4, 1]
+
+        // run with block dims ({x, y, z}) {N_HEADS//8, 1, 1} thread dims {4, 8, 1]
         .reg .u32 head_idx;
         .reg .u32 ctaid;
         mov.u32 ctaid, %ctaid.x;
@@ -43,10 +51,11 @@
         mov.u32 thread_in_head, %tid.x;
 
         .reg .u64 thread_in_head_times_32;
-        mul.wide.u32 thread_in_head_times_32, thread_in_head, 32;
+        mul.wide.u32 thread_in_head_times_32, thread_in_head, 32; // each thread grabs 8 parameters of size 4 bytes
+        // TODO: TRANSPOSE
 
         .reg .u64 parameters_offset;
-        mul.wide.u32 parameters_offset, head_idx, 128;
+        mul.wide.u32 parameters_offset, head_idx, 128; // each head has 32 parameters of size 4 bytes
         add.u64 parameters_offset, parameters_offset, thread_in_head_times_32;
 
         .reg .f32 a_<8>;
@@ -55,6 +64,7 @@
 
         .reg .u64 our_a_ptr;
         add.u64 our_a_ptr, a_ptr, parameters_offset;
+        // transpose
         ld.global.v4.f32 {a_0, a_1, a_2, a_3}, [our_a_ptr];
         ld.global.v4.f32 {a_4, a_5, a_6, a_7}, [our_a_ptr + 16];
 
@@ -85,9 +95,6 @@
         // sequence is {N_HEADS, SEQUENCE_LENGTH}
         .reg .u64 our_u_ptr;
         add.u64 our_u_ptr, u_ptr, head_idx_times_sequence_length;
-
-        .reg .u64 our_out_ptr;
-        add.u64 our_out_ptr, output_ptr, head_idx_times_sequence_length;
 
         // Several values for u instead of just one so we can do one big vectorized load instead of four smaller loads.
         .reg .f32 u_k;
@@ -260,10 +267,6 @@ LOOP:
         shfl.sync.bfly.b32 val_1, val_2, 1, 0x1f, 0xffffffff;
         add.rz.ftz.f32 val_0, val_1, val_2;
 
-        // write out all outs
-        st.cs.global.v4.f32 [our_out_ptr], {out_1, out_2, out_3, val_0};
-
-        add.u64 our_out_ptr, our_out_ptr, 16;
         add.u64 our_u_ptr, our_u_ptr, 16;
         sub.u32 sequence_length, sequence_length, 4;
         setp.gt.u32     should_loop, sequence_length, 0;

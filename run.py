@@ -21,13 +21,11 @@ print("compiled")
 
 @torch.jit.script
 def torch_diag(sequence, A_DIAG, B, C, N_HEADS: int, STATE_SIZE: int, SEQUENCE_LENGTH: int):
-    torch_diag_outputs = torch.zeros((N_HEADS, SEQUENCE_LENGTH), dtype=torch.float32, device="cuda")
+    torch_diag_outputs = torch.empty((N_HEADS, SEQUENCE_LENGTH), dtype=torch.float32, device="cuda")
     for i in range(N_HEADS):
         state = torch.zeros((STATE_SIZE,), dtype=torch.float32, device="cuda")
         for j in range(SEQUENCE_LENGTH):
-            first_part = (A_DIAG[i] * state)
-            second_part = B[i] * sequence[i][j]
-            state = first_part + second_part
+            state = (A_DIAG[i] * state) + B[i] * sequence[i][j]
             torch_diag_outputs[(i, j)] = torch.sum(C[i] * state)
     return torch_diag_outputs
 
@@ -38,25 +36,25 @@ def torch_diag(sequence, A_DIAG, B, C, N_HEADS: int, STATE_SIZE: int, SEQUENCE_L
     key=[],
 )
 @triton.jit
-def ssm_kernel_batched_perhead_switched_loops(u_ptr, a_ptr, b_ptr, c_ptr, output_ptr, BATCH_SIZE:tl.constexpr, U_LENGTH: tl.constexpr, N: tl.constexpr, N_HEADS: tl.constexpr):
+def ssm_kernel_batched_perhead_switched_loops(u_ptr, a_ptr, b_ptr, c_ptr, output_ptr, U_LENGTH: tl.constexpr, N: tl.constexpr, N_HEADS: tl.constexpr):
     i = tl.program_id(axis=0) # which head we're on
     A = tl.load(a_ptr + i * N + tl.arange(0, N))
     B = tl.load(b_ptr + i * N + tl.arange(0, N))
     C = tl.load(c_ptr + i * N + tl.arange(0, N))
-    for k in range(BATCH_SIZE):
-        X = tl.zeros((N,), dtype=tl.float32)
-        for j in range(U_LENGTH):
-            u_k = tl.load(u_ptr + j * BATCH_SIZE + k)
-            X = X * A + B*u_k # X*A is N multiplies, B*u_k is N multiplies, adding is N adds
-            output_idx = (j * BATCH_SIZE * N_HEADS + k * N_HEADS + i)
-            tl.store(output_ptr + output_idx, tl.sum(X*C, axis=0)) # X*C is N multiplies, summing is N adds
-            # all told 2N FMAs and N multiplies
+    X = tl.zeros((N,), dtype=tl.float32)
+    for j in range(U_LENGTH):
+        u_k = tl.load(u_ptr + (j * N_HEADS))
+        X = X * A + B*u_k # X*A is N multiplies, B*u_k is N multiplies, adding is N adds
+        output_idx = ((j * N_HEADS) + i)
+        tl.store(output_ptr + output_idx, tl.sum(X*C, axis=0)) # X*C is N multiplies, summing is N adds
+        # all told 2N FMAs and N multiplies
 
 runs = 0
-def triton_ssm_batched(sequence, A, B, C, BATCH_SIZE, N_HEADS, STATE_SIZE, SEQUENCE_LENGTH):
+def triton_ssm_batched(sequence, A, B, C, N_HEADS, STATE_SIZE, SEQUENCE_LENGTH):
     global runs
-    triton_outputs = torch.zeros((SEQUENCE_LENGTH, BATCH_SIZE, N_HEADS), device="cuda", dtype=torch.float32)
-    asm = ssm_kernel_batched_perhead_switched_loops[(N_HEADS,)](sequence, A, B, C, triton_outputs, BATCH_SIZE, SEQUENCE_LENGTH, STATE_SIZE, N_HEADS)
+    triton_outputs = torch.empty((SEQUENCE_LENGTH, N_HEADS), device=sequence.device, dtype=torch.float32)
+    # asm = ssm_kernel_batched_perhead_switched_loops[(N_HEADS,)](sequence, A, B, C, triton_outputs, SEQUENCE_LENGTH, STATE_SIZE, N_HEADS)
+    ssm_k[(1,)](torch.empty((1,), device="cuda", dtype=torch.bfloat16))
     if SEQUENCE_LENGTH == 8192:
         # runs += 1
         # print("runs", runs)
@@ -81,15 +79,17 @@ def triton_ssm_batched(sequence, A, B, C, BATCH_SIZE, N_HEADS, STATE_SIZE, SEQUE
         args={"N_HEADS": 131072, "STATE_SIZE": 32},  # values for function arguments not in `x_names` and `y_name`
     ))
 def benchmark_unbatched(SEQUENCE_LENGTH, provider, STATE_SIZE, N_HEADS):
-    A = torch.ones((N_HEADS, STATE_SIZE), dtype=torch.float32, device="cuda")
-    B = torch.ones((N_HEADS, STATE_SIZE), dtype=torch.float32, device="cuda")
-    C = torch.ones((N_HEADS, STATE_SIZE), dtype=torch.float32, device="cuda")
-    sequence = torch.ones((N_HEADS, SEQUENCE_LENGTH), dtype=torch.float32, device="cuda")
+    A = torch.ones((N_HEADS, STATE_SIZE), dtype=torch.float32, device="cuda").cuda()
+    B = torch.ones((N_HEADS, STATE_SIZE), dtype=torch.float32, device="cuda").cuda()
+    C = torch.ones((N_HEADS, STATE_SIZE), dtype=torch.float32, device="cuda").cuda()
+    sequence = torch.ones((N_HEADS, SEQUENCE_LENGTH), dtype=torch.float32, device="cuda").cuda()
 
     if provider == "ptx":
         ms, min_ms, max_ms = triton.testing.do_bench(lambda: siso.forward(sequence, A, B, C, SEQUENCE_LENGTH))
     elif provider == 'triton':
         ms, min_ms, max_ms = triton.testing.do_bench(lambda: triton_ssm_batched(sequence, A, B, C, 1, N_HEADS, STATE_SIZE, SEQUENCE_LENGTH))
+    elif provider == "torch":
+        ms, min_ms, max_ms = triton.testing.do_bench(lambda: torch_diag(sequence, A, B, C, N_HEADS, STATE_SIZE, SEQUENCE_LENGTH))
     else:
         raise ValueError("got unknown provider", provider)
     elems = lambda ms: SEQUENCE_LENGTH * N_HEADS * 1000/(ms)
@@ -101,20 +101,34 @@ if len(sys.argv) > 1 and sys.argv[1] == "benchmark":
     sys.exit(0)
 
 print("Got to running first test")
-N_HEADS = 256
+N_HEADS = 1
 STATE_SIZE = 32
-SEQUENCE_LENGTH = 8192
-A = torch.randn((N_HEADS, STATE_SIZE), dtype=torch.float32, device="cuda")/2
-# A = torch.empty((N_HEADS, STATE_SIZE), dtype=torch.float32, device="cuda")
+SEQUENCE_LENGTH = 32
+# A = torch.randn((N_HEADS, STATE_SIZE), dtype=torch.float32, device="cuda")/8
+A = torch.empty((N_HEADS, STATE_SIZE), dtype=torch.float32, device="cuda")
 print("Created A")
-B = torch.randn((N_HEADS, STATE_SIZE), dtype=torch.float32, device="cuda")/2
-# B = torch.empty((N_HEADS, STATE_SIZE), dtype=torch.float32, device="cuda")
+# B = torch.randn((N_HEADS, STATE_SIZE), dtype=torch.float32, device="cuda")/8
+B = torch.empty((N_HEADS, STATE_SIZE), dtype=torch.float32, device="cuda")
 print("Created B")
-C = torch.randn((N_HEADS, STATE_SIZE), dtype=torch.float32, device="cuda")/2
-# C = torch.empty((N_HEADS, STATE_SIZE), dtype=torch.float32, device="cuda")
-print("Created A,B,C", A.abs().sum(), B.abs().sum(), C.abs().sum())
-# sequence = torch.ones((N_HEADS, SEQUENCE_LENGTH), dtype=torch.float32, device="cuda")
+# C = torch.randn((N_HEADS, STATE_SIZE), dtype=torch.float32, device="cuda")/8
+C = torch.empty((N_HEADS, STATE_SIZE), dtype=torch.float32, device="cuda")
+# print("Created A,B,C", A.abs().sum(), B.abs().sum(), C.abs().sum())
+# sequence = torch.randn((N_HEADS, SEQUENCE_LENGTH), dtype=torch.float32, device="cuda")/8
 sequence = torch.empty((N_HEADS, SEQUENCE_LENGTH), dtype=torch.float32, device="cuda")
+
+if len(sys.argv) > 1 and sys.argv[1] == "torch":
+    print("about to torch diag")
+    output = torch_diag(sequence, A, B, C, N_HEADS, STATE_SIZE, SEQUENCE_LENGTH)
+    print("torch diag'd")
+    sys.exit(0)
+
+if len(sys.argv) > 1 and sys.argv[1] == "triton":
+    print("about to triton")
+    triton_ssm_batched(sequence, A, B, C, N_HEADS, STATE_SIZE, SEQUENCE_LENGTH)
+    print("triton'd")
+    sys.exit(0)
+
+# breakpoint()
 print("Created sequence")
 output = siso.forward(sequence, A, B, C, SEQUENCE_LENGTH)
 print("PTX sum output is", output.to(dtype=torch.float64).abs().sum(), f"nan: {bool(output.isnan().any())}")
