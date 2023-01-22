@@ -33,7 +33,7 @@ def torch_diag(sequence, A_DIAG, B, C, N_HEADS: int, STATE_SIZE: int, SEQUENCE_L
 
 @triton.autotune(
     configs=[
-        triton.Config({}, num_warps=1)
+        triton.Config({}, num_warps=int(sys.argv[2]))
     ],
     key=[],
 )
@@ -56,9 +56,9 @@ def triton_ssm(sequence, A, B, C, N_HEADS, STATE_SIZE, SEQUENCE_LENGTH):
     global runs
     triton_outputs = torch.empty((N_HEADS, SEQUENCE_LENGTH), device=sequence.device, dtype=sequence.dtype)
     asm = ssm_kernel_perhead[(N_HEADS,)](sequence, A, B, C, triton_outputs, SEQUENCE_LENGTH, STATE_SIZE, N_HEADS)
-    if SEQUENCE_LENGTH == 8192:
-        # runs += 1
-        # print("runs", runs)
+    if SEQUENCE_LENGTH == 16384:
+        runs += 1
+        print("runs", runs)
         if runs == 8:
             print(asm.asm["ptx"])
         # print(asm.asm["ptx"])
@@ -72,8 +72,8 @@ def triton_ssm(sequence, A, B, C, N_HEADS, STATE_SIZE, SEQUENCE_LENGTH):
         x_log=True,  # x axis is logarithmic
         y_log=True,
         line_arg='provider',  # argument name whose value corresponds to a different line in the plot
-        line_vals=['ptx'],  # possible values for `line_arg`
-        line_names=['ptx'],  # label name for the lines
+        line_vals=['triton'],  # possible values for `line_arg`
+        line_names=['triton'],  # label name for the lines
         styles=[('red', 'solid'), ("blue", "solid"),],  # line styles
         ylabel='elem/s',  # label name for the y-axis
         plot_name=f'ssm-performance @ N=32, N_HEADS=131072',  # name for the plot. Used also as a file name for saving the plot.
@@ -88,7 +88,7 @@ def benchmark_unbatched(SEQUENCE_LENGTH, provider, STATE_SIZE, N_HEADS):
     if provider == "ptx":
         ms, min_ms, max_ms = triton.testing.do_bench(lambda: siso.forward(sequence, A, B, C, SEQUENCE_LENGTH))
     elif provider == 'triton':
-        ms, min_ms, max_ms = triton.testing.do_bench(lambda: triton_ssm_batched(sequence, A, B, C, 1, N_HEADS, STATE_SIZE, SEQUENCE_LENGTH))
+        ms, min_ms, max_ms = triton.testing.do_bench(lambda: triton_ssm(sequence, A, B, C, N_HEADS, STATE_SIZE, SEQUENCE_LENGTH))
     elif provider == "torch":
         ms, min_ms, max_ms = triton.testing.do_bench(lambda: torch_diag(sequence, A, B, C, N_HEADS, STATE_SIZE, SEQUENCE_LENGTH))
     else:
@@ -102,45 +102,49 @@ if len(sys.argv) > 1 and sys.argv[1] == "benchmark":
     sys.exit(0)
 
 print("Got to running first test")
-N_HEADS = 64
-STATE_SIZE = 64
-SEQUENCE_LENGTH = 512
-A = torch.randn((N_HEADS, STATE_SIZE), dtype=torch.float32, device="cuda")/8
-# A = torch.empty((N_HEADS, STATE_SIZE), dtype=torch.float32, device="cuda")
+N_HEADS = 131072
+STATE_SIZE = 32
+SEQUENCE_LENGTH = 8192
+
+creation_func = torch.empty if len(sys.argv) > 1 else torch.randn
+
+A = creation_func((N_HEADS, STATE_SIZE), dtype=torch.float32, device="cuda")/8
 print("Created A")
-B = torch.randn((N_HEADS, STATE_SIZE), dtype=torch.float32, device="cuda")/8
+B = creation_func((N_HEADS, STATE_SIZE), dtype=torch.float32, device="cuda")/8
 # B = torch.empty((N_HEADS, STATE_SIZE), dtype=torch.float32, device="cuda")
 print("Created B")
-C = torch.randn((N_HEADS, STATE_SIZE), dtype=torch.float32, device="cuda")/8
+C = creation_func((N_HEADS, STATE_SIZE), dtype=torch.float32, device="cuda")/8
 # C = torch.empty((N_HEADS, STATE_SIZE), dtype=torch.float32, device="cuda")
 # print("Created A,B,C", A.abs().sum(), B.abs().sum(), C.abs().sum())
-sequence = torch.randn((N_HEADS, SEQUENCE_LENGTH), dtype=torch.float32, device="cuda")/8
+sequence = creation_func((N_HEADS, SEQUENCE_LENGTH), dtype=torch.float32, device="cuda")/8
 # sequence = torch.empty((N_HEADS, SEQUENCE_LENGTH), dtype=torch.float32, device="cuda")
 
-if len(sys.argv) > 1 and sys.argv[1] == "torch":
-    print("about to torch diag")
-    output = torch_diag(sequence, A, B, C, N_HEADS, STATE_SIZE, SEQUENCE_LENGTH)
-    print("torch diag'd")
+if len(sys.argv) > 1:
+    if sys.argv[1] == "torch":
+        torch_diag(sequence, A, B, C, N_HEADS, STATE_SIZE, SEQUENCE_LENGTH)
+    elif sys.argv[1] == "triton":
+        triton_ssm(sequence, A, B, C, N_HEADS, STATE_SIZE, SEQUENCE_LENGTH)
+    elif sys.argv[1] == "ptx":
+        siso.forward(sequence, A, B, C, SEQUENCE_LENGTH)
     sys.exit(0)
 
-if len(sys.argv) > 1 and sys.argv[1] == "triton":
-    print("about to triton")
-    triton_ssm_batched(sequence, A, B, C, N_HEADS, STATE_SIZE, SEQUENCE_LENGTH)
-    print("triton'd")
-    sys.exit(0)
+
 
 # breakpoint()
 print("Created sequence")
 output = triton_ssm(sequence, A, B, C, N_HEADS, STATE_SIZE, SEQUENCE_LENGTH)
 print("triton sum output is", output.to(dtype=torch.float64).abs().sum(), f"nan: {bool(output.isnan().any())}")
 
-print("A,B,C", A.abs().sum(), B.abs().sum(), C.abs().sum())
+# print("A,B,C", A.abs().sum(), B.abs().sum(), C.abs().sum())
 
 torch_output = torch_diag(sequence, A, B, C, N_HEADS, STATE_SIZE, SEQUENCE_LENGTH)
 print("torch sum output is", torch_output.to(dtype=torch.float64).abs().sum(), f"nan: {bool(torch_output.isnan().any())}")
 
-print(f"{torch.allclose(output, torch_output)=} {(output - torch_output).abs().sum()=}/{output.abs().sum()=}")
-print(output)
-print(torch_output)
+close = torch.allclose(output, torch_output)
+print(f"Close: {close}")
+if not close:
+    print(f"absolute difference: {(output - torch_output).abs().sum()}. output magnitude: {output.abs().sum()}")
+    print("output", output)
+    print("torch output", torch_output)
 
 # breakpoint()
