@@ -47,14 +47,6 @@
     mov.u32 block_id, %ctaid.x;
     mov.u32 lane_id, %laneid;
 
-    /*
-    .reg .u64 block_id_big;
-    mul.wide.u32 block_id_big, block_id, 4;
-    add.u64 output_ptr, output_ptr, block_id_big;
-    st.global.u32 [output_ptr], block_id;
-    ret;
-    */
-
     // N=64 L=8, so multiply our block_id (which is our head) by N*L*2 bytes.
     .reg .u64 head_bc_offset;
     mul.wide.u32 head_bc_offset, block_id, 1024;
@@ -86,9 +78,6 @@
     add.u64 d_ptr_for_thread, d_ptr_for_thread, thread_id_times_4; // calculate d_ptr[head][threadrow]
     .reg .b32 d_fragment;
     ld.global.L1::no_allocate.b32 {d_fragment}, [d_ptr_for_thread];
-
-    // B and C are loaded in the same way. The reason why we have to separate v2 loads instead of one v4 load is because of how matrix fragments have to be laid out in memory.
-    // https://docs.nvidia.com/cuda/parallel-thread-execution/index.html#warp-level-matrix-fragment-mma-1688
 
     .reg .u64 c_ptr_for_thread;
     add.u64 c_ptr_for_thread, c_ptr, head_bc_offset; // calculate c_ptr[head]
